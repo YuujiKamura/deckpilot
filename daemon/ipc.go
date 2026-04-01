@@ -74,24 +74,12 @@ func (d *Daemon) handleSend(parts []string) string {
 		}
 	}
 
-	// Pause watcher to free the pipe, send text + submit
+	// Send text+\r as single INPUT (textCallback handles both)
+	if err := pipe.SendKeys(pipePath, msg+"\r"); err != nil {
+		return fmt.Sprintf("ERR|send: %v\n", err)
+	}
+
 	w, wok := d.getWatcher(name)
-	if wok {
-		resumeCh := w.PausePolling()
-		defer close(resumeCh)
-		// Small delay to ensure watcher's last poll connection is closed
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	// Send text via INPUT
-	if err := pipe.SendKeys(pipePath, msg); err != nil {
-		return fmt.Sprintf("ERR|send text: %v\n", err)
-	}
-	// Submit via RAW_INPUT \r (separate connection, watcher paused)
-	if err := pipe.SendRaw(pipePath, []byte("\r")); err != nil {
-		return fmt.Sprintf("ERR|send enter: %v\n", err)
-	}
-
 	if wok {
 		time.Sleep(300 * time.Millisecond)
 		return fmt.Sprintf("OK|sent (%s)\n", w.Status())

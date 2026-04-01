@@ -11,7 +11,6 @@ import (
 )
 
 // Send sends a message+submit to a named session.
-// Text via INPUT, then \r via RAW_INPUT, directly from this CLI process.
 func Send(args []string) {
 	if len(args) < 2 {
 		fmt.Fprintln(os.Stderr, "usage: deckpilot send <session> <message...>")
@@ -25,7 +24,6 @@ func Send(args []string) {
 		os.Exit(1)
 	}
 
-	// Resolve pipe path
 	raw, err := daemon.DaemonList()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "list: %v\n", err)
@@ -51,8 +49,9 @@ func Send(args []string) {
 		os.Exit(1)
 	}
 
-	// Send text via INPUT, submit via RAW_INPUT \r
-	// Ghostty CP uses SendMessageW so each input is fully drained before return
+	// Send text via INPUT then \r via RAW_INPUT back-to-back.
+	// Ghostty CP queues both and drains in one batch (no PostMessageW
+	// for second item since queue is already non-empty).
 	if err := pipe.SendKeys(pipePath, message); err != nil {
 		fmt.Fprintf(os.Stderr, "send text: %v\n", err)
 		os.Exit(1)
