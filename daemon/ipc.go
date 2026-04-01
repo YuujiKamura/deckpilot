@@ -221,6 +221,23 @@ func DaemonOutput(name string, lines int) (string, error) {
 }
 
 // DaemonHistory returns the command history for a session.
+// DaemonStatus returns the status of a session (e.g. "idle", "active", "dead").
+func DaemonStatus(name string) (string, error) {
+	resp, err := dialDaemon(fmt.Sprintf("STATUS|%s", name))
+	if err != nil {
+		return "", err
+	}
+	if strings.HasPrefix(resp, "ERR|") {
+		return "", fmt.Errorf("%s", strings.TrimPrefix(resp, "ERR|"))
+	}
+	// Response: OK|name|status|stableFor
+	parts := strings.Split(strings.TrimPrefix(resp, "OK|"), "|")
+	if len(parts) >= 2 {
+		return parts[1], nil
+	}
+	return resp, nil
+}
+
 func DaemonHistory(name string) (string, error) {
 	resp, err := dialDaemon(fmt.Sprintf("HISTORY|%s", name))
 	if err != nil {

@@ -5,12 +5,17 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/YuujiKamura/deckpilot/daemon"
 	"github.com/YuujiKamura/deckpilot/pipe"
 )
 
-// Send sends a message+submit to a named session.
+// Send sends a message+submit with delivery guarantee.
+// 1. INPUT text
+// 2. RAW_INPUT \r
+// 3. Poll watcher status — if active, done (ACK)
+// 4. If still idle, retry \r
 func Send(args []string) {
 	if len(args) < 2 {
 		fmt.Fprintln(os.Stderr, "usage: deckpilot send <session> <message...>")
@@ -24,6 +29,7 @@ func Send(args []string) {
 		os.Exit(1)
 	}
 
+	// Resolve pipe path
 	raw, err := daemon.DaemonList()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "list: %v\n", err)
@@ -49,17 +55,23 @@ func Send(args []string) {
 		os.Exit(1)
 	}
 
-	// Send text via INPUT then \r via RAW_INPUT back-to-back.
-	// Ghostty CP queues both and drains in one batch (no PostMessageW
-	// for second item since queue is already non-empty).
+	// Step 1: Send text
 	if err := pipe.SendKeys(pipePath, message); err != nil {
 		fmt.Fprintf(os.Stderr, "send text: %v\n", err)
 		os.Exit(1)
 	}
-	if err := pipe.SendRaw(pipePath, []byte("\r")); err != nil {
-		fmt.Fprintf(os.Stderr, "send submit: %v\n", err)
-		os.Exit(1)
+
+	// Step 2: ACK loop — send \r, check status, retry
+	for i := 0; i < 10; i++ {
+		pipe.SendRaw(pipePath, []byte("\r"))
+		time.Sleep(300 * time.Millisecond)
+
+		status, err := daemon.DaemonStatus(name)
+		if err == nil && status == "active" {
+			fmt.Fprintf(os.Stderr, "%s: submitted (%d)\n", name, i+1)
+			return
+		}
 	}
 
-	fmt.Fprintf(os.Stderr, "%s: submitted\n", name)
+	fmt.Fprintf(os.Stderr, "%s: sent (no ack)\n", name)
 }
