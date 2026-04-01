@@ -2,6 +2,7 @@ package pipe
 
 import (
 	"encoding/base64"
+	"fmt"
 	"strings"
 )
 
@@ -34,6 +35,29 @@ func IsError(resp string) (string, bool) {
 		return strings.TrimPrefix(resp, PrefixERR), true
 	}
 	return "", false
+}
+
+// ParseCmdID extracts cmd_id from QUEUED|session|type|cmd_id response.
+func ParseCmdID(resp string) (uint32, bool) {
+	parts := strings.Split(strings.TrimSpace(resp), "|")
+	if len(parts) >= 4 && parts[0] == "QUEUED" {
+		var id uint32
+		_, err := fmt.Sscanf(parts[3], "%d", &id)
+		if err == nil {
+			return id, true
+		}
+	}
+	return 0, false
+}
+
+// AckPoll sends ACK_POLL|cmd_id and returns true if the cmd was drained.
+func AckPoll(pipePath string, cmdID uint32) (bool, error) {
+	msg := fmt.Sprintf("ACK_POLL|%d", cmdID)
+	resp, err := SendRecv(pipePath, msg)
+	if err != nil {
+		return false, err
+	}
+	return strings.HasPrefix(resp, "ACK|"), nil
 }
 
 // StripTailHeader strips the first line (TAIL|<session>|<linecount>)
