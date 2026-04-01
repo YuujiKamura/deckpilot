@@ -11,6 +11,16 @@ import (
 	"github.com/YuujiKamura/deckpilot/pipe"
 )
 
+// BufferNotification is emitted when the watcher detects a change or stability.
+type BufferNotification struct {
+	SessionName string
+	Content     string
+	Hash        string
+	Changed     bool   // hash changed since last poll
+	StableFor   int    // consecutive identical reads
+	Status      string // "idle", "active", "dead"
+}
+
 // Watcher monitors a single Ghostty session by polling its terminal output.
 type Watcher struct {
 	mu          sync.Mutex
@@ -20,14 +30,17 @@ type Watcher struct {
 	stableCount int
 	status      string // "idle", "active", "dead"
 	lastContent string
+	onNotify    func(BufferNotification) // optional callback
 }
 
 // NewWatcher creates a Watcher for the given session.
-func NewWatcher(name, pipePath string) *Watcher {
+// onNotify is called on every poll cycle (may be nil).
+func NewWatcher(name, pipePath string, onNotify func(BufferNotification)) *Watcher {
 	return &Watcher{
 		name:     name,
 		pipePath: pipePath,
 		status:   "active",
+		onNotify: onNotify,
 	}
 }
 
@@ -73,15 +86,27 @@ func (w *Watcher) poll() {
 
 	w.lastContent = content
 
-	if hash == w.lastHash {
+	changed := hash != w.lastHash
+	if changed {
+		w.lastHash = hash
+		w.stableCount = 0
+		w.status = "active"
+	} else {
 		w.stableCount++
 		if w.stableCount >= 3 {
 			w.status = "idle"
 		}
-	} else {
-		w.lastHash = hash
-		w.stableCount = 0
-		w.status = "active"
+	}
+
+	if w.onNotify != nil {
+		w.onNotify(BufferNotification{
+			SessionName: w.name,
+			Content:     content,
+			Hash:        hash,
+			Changed:     changed,
+			StableFor:   w.stableCount,
+			Status:      w.status,
+		})
 	}
 }
 

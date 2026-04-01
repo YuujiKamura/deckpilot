@@ -19,16 +19,19 @@ func IPCPipePath() string {
 
 // Daemon manages Ghostty sessions and handles IPC from the CLI.
 type Daemon struct {
-	mu       sync.Mutex
-	sessions map[string]string   // session name -> pipe path
-	watchers map[string]*Watcher // session name -> watcher
+	mu            sync.Mutex
+	sessions      map[string]string   // session name -> pipe path
+	watchers      map[string]*Watcher // session name -> watcher
+	lastNotify    map[string]BufferNotification
+	onNotify      func(BufferNotification) // external callback (optional)
 }
 
 // New creates a new Daemon instance.
 func New() *Daemon {
 	return &Daemon{
-		sessions: make(map[string]string),
-		watchers: make(map[string]*Watcher),
+		sessions:   make(map[string]string),
+		watchers:   make(map[string]*Watcher),
+		lastNotify: make(map[string]BufferNotification),
 	}
 }
 
@@ -75,7 +78,14 @@ func (d *Daemon) addSession(name, pipePath string) {
 	}
 	d.sessions[name] = pipePath
 
-	w := NewWatcher(name, pipePath)
+	w := NewWatcher(name, pipePath, func(n BufferNotification) {
+		d.mu.Lock()
+		d.lastNotify[name] = n
+		d.mu.Unlock()
+		if d.onNotify != nil {
+			d.onNotify(n)
+		}
+	})
 	d.watchers[name] = w
 	go w.Run(nil)
 	log.Printf("daemon: added session %q -> %s", name, pipePath)
