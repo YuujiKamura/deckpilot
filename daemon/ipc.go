@@ -73,10 +73,11 @@ func (d *Daemon) handleSend(parts []string) string {
 		}
 	}
 
-	if err := w.Send(msg); err != nil {
+	feedback, err := w.Send(msg)
+	if err != nil {
 		return fmt.Sprintf("ERR|send: %v\n", err)
 	}
-	return "OK|sent\n"
+	return fmt.Sprintf("OK|%s\n", feedback)
 }
 
 func (d *Daemon) handleList() string {
@@ -170,16 +171,17 @@ func dialDaemon(command string) (string, error) {
 }
 
 // DaemonSend sends a message to the named session via the daemon.
-func DaemonSend(name, message string) error {
+// Returns status feedback from watcher (e.g. "submitted (status: idle → active)").
+func DaemonSend(name, message string) (string, error) {
 	encoded := base64.StdEncoding.EncodeToString([]byte(message))
 	resp, err := dialDaemon(fmt.Sprintf("SEND|%s|%s", name, encoded))
 	if err != nil {
-		return err
+		return "", err
 	}
 	if strings.HasPrefix(resp, "ERR|") {
-		return fmt.Errorf("%s", strings.TrimPrefix(resp, "ERR|"))
+		return "", fmt.Errorf("%s", strings.TrimPrefix(resp, "ERR|"))
 	}
-	return nil
+	return strings.TrimPrefix(resp, "OK|"), nil
 }
 
 // DaemonList returns the JSON array of sessions from the daemon.

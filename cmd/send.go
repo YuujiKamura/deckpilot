@@ -23,9 +23,10 @@ func Send(args []string) {
 		os.Exit(1)
 	}
 
-	if err := daemon.DaemonSend(name, message); err != nil {
+	feedback, err := daemon.DaemonSend(name, message)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "send: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Fprintf(os.Stderr, "sent to %s\n", name)
+	fmt.Fprintf(os.Stderr, "%s: %s\n", name, feedback)
 }

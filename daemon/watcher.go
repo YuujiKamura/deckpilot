@@ -103,9 +103,20 @@ func (w *Watcher) handleRequest(req pipeRequest) {
 	switch req.kind {
 	case "sendkeys":
 		// Send text via INPUT, then submit via RAW_INPUT \r
+		prevStatus := w.Status()
 		err := pipe.SendKeys(w.pipePath, req.payload)
 		if err == nil {
 			err = pipe.SendRaw(w.pipePath, []byte("\r"))
+		}
+		if err == nil {
+			// Poll once to detect state change (submit confirmation)
+			w.poll()
+			newStatus := w.Status()
+			if newStatus != prevStatus {
+				res.content = fmt.Sprintf("submitted (status: %s → %s)", prevStatus, newStatus)
+			} else {
+				res.content = fmt.Sprintf("sent (status: %s, no change yet)", newStatus)
+			}
 		}
 		res.err = err
 	case "tail":
@@ -162,9 +173,10 @@ func (w *Watcher) updateContent(content string) {
 }
 
 // Send queues a send+enter to this session's pipe goroutine.
-func (w *Watcher) Send(text string) error {
+// Returns status feedback (e.g. "submitted (status: idle → active)").
+func (w *Watcher) Send(text string) (string, error) {
 	if w.Status() == "dead" {
-		return fmt.Errorf("session %s is dead", w.name)
+		return "", fmt.Errorf("session %s is dead", w.name)
 	}
 	req := pipeRequest{
 		kind:    "sendkeys",
@@ -174,10 +186,10 @@ func (w *Watcher) Send(text string) error {
 	select {
 	case w.reqCh <- req:
 	default:
-		return fmt.Errorf("session %s request queue full", w.name)
+		return "", fmt.Errorf("session %s request queue full", w.name)
 	}
 	res := <-req.result
-	return res.err
+	return res.content, res.err
 }
 
 // FreshTail queues a tail request to the pipe goroutine.
