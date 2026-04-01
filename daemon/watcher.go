@@ -16,36 +16,51 @@ type BufferNotification struct {
 	SessionName string
 	Content     string
 	Hash        string
-	Changed     bool   // hash changed since last poll
-	StableFor   int    // consecutive identical reads
-	Status      string // "idle", "active", "dead"
+	Changed     bool
+	StableFor   int
+	Status      string
 }
 
-// Watcher monitors a single Ghostty session by polling its terminal output.
+// pipeRequest is a command queued to the watcher's pipe goroutine.
+type pipeRequest struct {
+	kind    string // "sendkeys", "tail", "history"
+	payload string // text for sendkeys, unused for tail/history
+	lines   int    // for tail
+	result  chan pipeResult
+}
+
+type pipeResult struct {
+	content string
+	err     error
+}
+
+// Watcher monitors a single Ghostty session. All pipe I/O for this session
+// goes through the watcher's single goroutine to avoid contention.
 type Watcher struct {
 	mu          sync.Mutex
 	name        string
 	pipePath    string
 	lastHash    string
 	stableCount int
-	status      string // "idle", "active", "dead"
+	status      string
 	lastContent string
-	onNotify    func(BufferNotification) // optional callback
+	onNotify    func(BufferNotification)
+	reqCh       chan pipeRequest
 }
 
 // NewWatcher creates a Watcher for the given session.
-// onNotify is called on every poll cycle (may be nil).
 func NewWatcher(name, pipePath string, onNotify func(BufferNotification)) *Watcher {
 	return &Watcher{
 		name:     name,
 		pipePath: pipePath,
 		status:   "active",
 		onNotify: onNotify,
+		reqCh:    make(chan pipeRequest, 16),
 	}
 }
 
-// Run polls the session output every 500ms. If ctx is nil, it runs until
-// the session is detected as dead.
+// Run is the single goroutine that owns all pipe I/O for this session.
+// Poll on ticker, drain requests between polls.
 func (w *Watcher) Run(ctx context.Context) {
 	if ctx == nil {
 		var cancel context.CancelFunc
@@ -57,9 +72,22 @@ func (w *Watcher) Run(ctx context.Context) {
 	defer ticker.Stop()
 
 	for {
+		// Drain all pending requests first (commands take priority over polling)
+		drained := true
+		for drained {
+			select {
+			case req := <-w.reqCh:
+				w.handleRequest(req)
+			default:
+				drained = false
+			}
+		}
+
 		select {
 		case <-ctx.Done():
 			return
+		case req := <-w.reqCh:
+			w.handleRequest(req)
 		case <-ticker.C:
 			w.poll()
 			if w.Status() == "dead" {
@@ -70,6 +98,26 @@ func (w *Watcher) Run(ctx context.Context) {
 	}
 }
 
+func (w *Watcher) handleRequest(req pipeRequest) {
+	var res pipeResult
+	switch req.kind {
+	case "sendkeys":
+		err := pipe.SendKeys(w.pipePath, req.payload)
+		if err == nil {
+			err = pipe.SendEnter(w.pipePath)
+		}
+		res.err = err
+	case "tail":
+		res.content, res.err = pipe.Tail(w.pipePath, req.lines)
+		if res.err == nil {
+			w.updateContent(res.content)
+		}
+	case "history":
+		res.content, res.err = pipe.History(w.pipePath)
+	}
+	req.result <- res
+}
+
 func (w *Watcher) poll() {
 	content, err := pipe.Tail(w.pipePath, 50)
 	if err != nil {
@@ -78,14 +126,16 @@ func (w *Watcher) poll() {
 		w.mu.Unlock()
 		return
 	}
+	w.updateContent(content)
+}
 
+func (w *Watcher) updateContent(content string) {
 	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
 	w.lastContent = content
-
 	changed := hash != w.lastHash
 	if changed {
 		w.lastHash = hash
@@ -110,7 +160,42 @@ func (w *Watcher) poll() {
 	}
 }
 
-// Status returns the current status: "idle", "active", or "dead".
+// Send queues a send+enter to this session's pipe goroutine.
+func (w *Watcher) Send(text string) error {
+	req := pipeRequest{
+		kind:    "sendkeys",
+		payload: text,
+		result:  make(chan pipeResult, 1),
+	}
+	w.reqCh <- req
+	res := <-req.result
+	return res.err
+}
+
+// FreshTail queues a tail request to the pipe goroutine.
+func (w *Watcher) FreshTail(lines int) (string, error) {
+	req := pipeRequest{
+		kind:   "tail",
+		lines:  lines,
+		result: make(chan pipeResult, 1),
+	}
+	w.reqCh <- req
+	res := <-req.result
+	return res.content, res.err
+}
+
+// FreshHistory queues a history request to the pipe goroutine.
+func (w *Watcher) FreshHistory() (string, error) {
+	req := pipeRequest{
+		kind:   "history",
+		result: make(chan pipeResult, 1),
+	}
+	w.reqCh <- req
+	res := <-req.result
+	return res.content, res.err
+}
+
+// Status returns the current status.
 func (w *Watcher) Status() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
