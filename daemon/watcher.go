@@ -102,11 +102,8 @@ func (w *Watcher) handleRequest(req pipeRequest) {
 	var res pipeResult
 	switch req.kind {
 	case "sendkeys":
-		err := pipe.SendKeys(w.pipePath, req.payload)
-		if err == nil {
-			err = pipe.SendEnter(w.pipePath)
-		}
-		res.err = err
+		// Atomic text+Enter via RAW_INPUT (agent-deck SendKeysAndEnter pattern)
+		res.err = pipe.SendRaw(w.pipePath, []byte(req.payload+"\r"))
 	case "tail":
 		res.content, res.err = pipe.Tail(w.pipePath, req.lines)
 		if res.err == nil {
