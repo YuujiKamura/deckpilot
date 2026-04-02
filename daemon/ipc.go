@@ -74,17 +74,47 @@ func (d *Daemon) handleSend(parts []string) string {
 		}
 	}
 
-	// Send text+\r as single INPUT (textCallback handles both)
-	if err := pipe.SendKeys(pipePath, msg+"\r"); err != nil {
-		return fmt.Sprintf("ERR|send: %v\n", err)
+	var resumeCh chan struct{}
+	if w, ok := d.getWatcher(name); ok {
+		resumeCh = w.PausePolling()
+		defer close(resumeCh)
 	}
 
-	w, wok := d.getWatcher(name)
-	if wok {
-		time.Sleep(300 * time.Millisecond)
-		return fmt.Sprintf("OK|sent (%s)\n", w.Status())
+	resp1, err := pipe.SendRecv(pipePath, fmt.Sprintf("INPUT|deckpilot|%s", pipe.Base64Encode(msg)))
+	if err != nil {
+		return fmt.Sprintf("ERR|send text: %v\n", err)
 	}
-	return "OK|sent\n"
+	if errMsg, ok := pipe.IsError(resp1); ok {
+		return fmt.Sprintf("ERR|send text: %s\n", errMsg)
+	}
+	textCmdID, _ := pipe.ParseCmdID(resp1)
+
+	resp2, err := pipe.SendRecv(pipePath, fmt.Sprintf("RAW_INPUT|deckpilot|%s", pipe.Base64Encode("\r")))
+	if err != nil {
+		return fmt.Sprintf("ERR|send enter: %v\n", err)
+	}
+	if errMsg, ok := pipe.IsError(resp2); ok {
+		return fmt.Sprintf("ERR|send enter: %s\n", errMsg)
+	}
+	enterCmdID, _ := pipe.ParseCmdID(resp2)
+
+	targetID := enterCmdID
+	if targetID == 0 {
+		targetID = textCmdID
+	}
+	if targetID == 0 {
+		return "OK|sent|no_ack\n"
+	}
+
+	for i := 0; i < 10; i++ {
+		time.Sleep(100 * time.Millisecond)
+		acked, err := pipe.AckPoll(pipePath, targetID)
+		if err == nil && acked {
+			return fmt.Sprintf("OK|ack|%d\n", targetID)
+		}
+	}
+
+	return "OK|sent|no_ack\n"
 }
 
 func (d *Daemon) handleList() string {
