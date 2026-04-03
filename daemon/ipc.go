@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bufio"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -83,20 +84,37 @@ func (d *Daemon) handleSend(parts []string) string {
 		defer close(resumeCh)
 	}
 
+	// Capture buffer hash before send for retry detection
+	preHash := ""
+	if pre, err := pipe.Tail(pipePath, 50); err == nil {
+		preHash = fmt.Sprintf("%x", sha256.Sum256([]byte(pre)))
+	}
+
 	// Phase 1: INPUT(text) → ACK wait → Phase 2: RAW_INPUT(\r) → ACK wait
 	submitID, err := pipe.SendWithSubmit(pipePath, msg, "\r")
 	if err != nil {
 		return fmt.Sprintf("ERR|send: %v\n", err)
 	}
 
-	log.Printf("handleSend: caller=%q name=%q, calling setLastUsed", caller, name)
-	d.setLastUsed(caller, name)
-	log.Printf("handleSend: setLastUsed done, verifying: getLastUsed(%q) = ...", caller)
-	if v, ok := d.getLastUsed(caller); ok {
-		log.Printf("handleSend: verified getLastUsed(%q) = %q", caller, v)
-	} else {
-		log.Printf("handleSend: WARNING getLastUsed(%q) returned !ok", caller)
+	// Retry \r if buffer didn't change (known Ghostty CP drain issue)
+	if preHash != "" {
+		for retry := 0; retry < 3; retry++ {
+			time.Sleep(300 * time.Millisecond)
+			post, err := pipe.Tail(pipePath, 50)
+			if err != nil {
+				break
+			}
+			postHash := fmt.Sprintf("%x", sha256.Sum256([]byte(post)))
+			if postHash != preHash {
+				log.Printf("handleSend: buffer changed after %d retries", retry)
+				break
+			}
+			log.Printf("handleSend: buffer unchanged, resending \\r (retry %d)", retry+1)
+			pipe.SendRaw(pipePath, []byte("\r"))
+		}
 	}
+
+	d.setLastUsed(caller, name)
 
 	if submitID == 0 {
 		return "OK|sent|no_ack\n"
