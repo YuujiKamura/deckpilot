@@ -16,6 +16,10 @@ func Send(args []string) {
 		os.Exit(1)
 	}
 	name := args[0]
+	// Restore MSYS2-mangled slash commands
+	for i := 1; i < len(args); i++ {
+		args[i] = unmangleMSYS(args[i])
+	}
 	message := strings.Join(args[1:], " ")
 	caller := getCaller()
 
