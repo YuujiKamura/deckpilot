@@ -98,6 +98,52 @@ func SendEnter(pipePath string) error {
 	return SendRaw(pipePath, []byte("\r"))
 }
 
+// SendWithSubmit sends text via INPUT, waits for ACK, then sends submitKey
+// via RAW_INPUT and waits for ACK. Two separate commands, sequenced with
+// drain confirmation between them. Returns the submit cmd_id.
+func SendWithSubmit(pipePath, text, submitKey string) (uint32, error) {
+	// Phase 1: send text via INPUT (if non-empty)
+	if text != "" {
+		resp, err := SendRecv(pipePath, fmt.Sprintf("INPUT|deckpilot|%s", Base64Encode(text)))
+		if err != nil {
+			return 0, fmt.Errorf("send text: %w", err)
+		}
+		if errMsg, ok := IsError(resp); ok {
+			return 0, fmt.Errorf("text: %s", errMsg)
+		}
+		// Wait for text to drain
+		if textID, ok := ParseCmdID(resp); ok {
+			waitForAck(pipePath, textID)
+		}
+	}
+
+	// Phase 2: send submit key via RAW_INPUT
+	encoded := base64.StdEncoding.EncodeToString([]byte(submitKey))
+	resp, err := SendRecv(pipePath, fmt.Sprintf("RAW_INPUT|deckpilot|%s", encoded))
+	if err != nil {
+		return 0, fmt.Errorf("send submit: %w", err)
+	}
+	if errMsg, ok := IsError(resp); ok {
+		return 0, fmt.Errorf("submit: %s", errMsg)
+	}
+	submitID, _ := ParseCmdID(resp)
+	if submitID > 0 {
+		waitForAck(pipePath, submitID)
+	}
+	return submitID, nil
+}
+
+// waitForAck polls ACK_POLL up to 10 times with 100ms intervals.
+func waitForAck(pipePath string, cmdID uint32) {
+	for i := 0; i < 10; i++ {
+		time.Sleep(100 * time.Millisecond)
+		acked, err := AckPoll(pipePath, cmdID)
+		if err == nil && acked {
+			return
+		}
+	}
+}
+
 // Tail retrieves the last N lines from the terminal buffer.
 func Tail(pipePath string, lines int) (string, error) {
 	msg := fmt.Sprintf("TAIL|%d", lines)

@@ -26,10 +26,14 @@ func main() {
 		cmd.List()
 	case "status":
 		cmd.Status(os.Args[2:])
+	case "listen":
+		cmd.Listen()
 	case "output":
 		cmd.Output(os.Args[2:])
 	case "history":
 		cmd.History(os.Args[2:])
+	case "launch":
+		cmd.Launch(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
 		os.Exit(1)

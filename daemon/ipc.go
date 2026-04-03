@@ -45,11 +45,30 @@ func (d *Daemon) handleConn(conn net.Conn) {
 		resp = d.handleHistory(parts)
 	case "STATUS":
 		resp = d.handleStatus(parts)
+	case "LISTEN":
+		d.handleListen(conn)
+		return // handleListen takes over the connection
 	default:
 		resp = fmt.Sprintf("ERR|unknown command: %s\n", cmd)
 	}
 
 	conn.Write([]byte(resp))
+}
+
+func (d *Daemon) handleListen(conn net.Conn) {
+	ch := d.AddListener()
+	defer d.RemoveListener(ch)
+
+	// Stream notifications as JSON lines
+	for n := range ch {
+		data, err := json.Marshal(n)
+		if err != nil {
+			continue
+		}
+		if _, err := fmt.Fprintf(conn, "%s\n", data); err != nil {
+			return // Connection closed
+		}
+	}
 }
 
 func (d *Daemon) handleSend(parts []string) string {
@@ -80,41 +99,15 @@ func (d *Daemon) handleSend(parts []string) string {
 		defer close(resumeCh)
 	}
 
-	resp1, err := pipe.SendRecv(pipePath, fmt.Sprintf("INPUT|deckpilot|%s", pipe.Base64Encode(msg)))
+	// Phase 1: INPUT(text) → ACK wait → Phase 2: RAW_INPUT(\r) → ACK wait
+	submitID, err := pipe.SendWithSubmit(pipePath, msg, "\r")
 	if err != nil {
-		return fmt.Sprintf("ERR|send text: %v\n", err)
+		return fmt.Sprintf("ERR|send: %v\n", err)
 	}
-	if errMsg, ok := pipe.IsError(resp1); ok {
-		return fmt.Sprintf("ERR|send text: %s\n", errMsg)
-	}
-	textCmdID, _ := pipe.ParseCmdID(resp1)
-
-	resp2, err := pipe.SendRecv(pipePath, fmt.Sprintf("RAW_INPUT|deckpilot|%s", pipe.Base64Encode("\r")))
-	if err != nil {
-		return fmt.Sprintf("ERR|send enter: %v\n", err)
-	}
-	if errMsg, ok := pipe.IsError(resp2); ok {
-		return fmt.Sprintf("ERR|send enter: %s\n", errMsg)
-	}
-	enterCmdID, _ := pipe.ParseCmdID(resp2)
-
-	targetID := enterCmdID
-	if targetID == 0 {
-		targetID = textCmdID
-	}
-	if targetID == 0 {
+	if submitID == 0 {
 		return "OK|sent|no_ack\n"
 	}
-
-	for i := 0; i < 10; i++ {
-		time.Sleep(100 * time.Millisecond)
-		acked, err := pipe.AckPoll(pipePath, targetID)
-		if err == nil && acked {
-			return fmt.Sprintf("OK|ack|%d\n", targetID)
-		}
-	}
-
-	return "OK|sent|no_ack\n"
+	return fmt.Sprintf("OK|ack|%d\n", submitID)
 }
 
 func (d *Daemon) handleList() string {
