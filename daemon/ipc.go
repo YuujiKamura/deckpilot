@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"strings"
 	"time"
@@ -28,8 +29,9 @@ func (d *Daemon) handleConn(conn net.Conn) {
 		return
 	}
 
-	parts := strings.SplitN(line, "|", 3)
+	parts := strings.SplitN(line, "|", 5)
 	cmd := parts[0]
+	log.Printf("handleConn: raw line=%q parts=%v", line, parts)
 
 	var resp string
 	switch cmd {
@@ -39,36 +41,13 @@ func (d *Daemon) handleConn(conn net.Conn) {
 		resp = d.handleSend(parts)
 	case "LIST":
 		resp = d.handleList()
-	case "OUTPUT":
-		resp = d.handleOutput(parts)
-	case "HISTORY":
-		resp = d.handleHistory(parts)
-	case "STATUS":
-		resp = d.handleStatus(parts)
-	case "LISTEN":
-		d.handleListen(conn)
-		return // handleListen takes over the connection
+	case "SHOW":
+		resp = d.handleShow(parts)
 	default:
 		resp = fmt.Sprintf("ERR|unknown command: %s\n", cmd)
 	}
 
 	conn.Write([]byte(resp))
-}
-
-func (d *Daemon) handleListen(conn net.Conn) {
-	ch := d.AddListener()
-	defer d.RemoveListener(ch)
-
-	// Stream notifications as JSON lines
-	for n := range ch {
-		data, err := json.Marshal(n)
-		if err != nil {
-			continue
-		}
-		if _, err := fmt.Fprintf(conn, "%s\n", data); err != nil {
-			return // Connection closed
-		}
-	}
 }
 
 func (d *Daemon) handleSend(parts []string) string {
@@ -77,6 +56,11 @@ func (d *Daemon) handleSend(parts []string) string {
 	}
 	name := parts[1]
 	msgB64 := parts[2]
+
+	caller := ""
+	if len(parts) >= 4 {
+		caller = parts[3]
+	}
 
 	msgBytes, err := base64.StdEncoding.DecodeString(msgB64)
 	if err != nil {
@@ -104,6 +88,16 @@ func (d *Daemon) handleSend(parts []string) string {
 	if err != nil {
 		return fmt.Sprintf("ERR|send: %v\n", err)
 	}
+
+	log.Printf("handleSend: caller=%q name=%q, calling setLastUsed", caller, name)
+	d.setLastUsed(caller, name)
+	log.Printf("handleSend: setLastUsed done, verifying: getLastUsed(%q) = ...", caller)
+	if v, ok := d.getLastUsed(caller); ok {
+		log.Printf("handleSend: verified getLastUsed(%q) = %q", caller, v)
+	} else {
+		log.Printf("handleSend: WARNING getLastUsed(%q) returned !ok", caller)
+	}
+
 	if submitID == 0 {
 		return "OK|sent|no_ack\n"
 	}
@@ -122,60 +116,62 @@ func (d *Daemon) handleList() string {
 	return fmt.Sprintf("OK|%s\n", string(b))
 }
 
-func (d *Daemon) handleOutput(parts []string) string {
-	if len(parts) < 3 {
-		return "ERR|usage: OUTPUT|<name>|<lines>\n"
-	}
-	name := parts[1]
-
-	w, ok := d.getWatcher(name)
-	if !ok {
-		return fmt.Sprintf("ERR|session not found: %s\n", name)
+func (d *Daemon) handleShow(parts []string) string {
+	log.Printf("handleShow: parts=%v len=%d", parts, len(parts))
+	// parts: ["SHOW", name, mode, caller]
+	caller := ""
+	if len(parts) >= 4 {
+		caller = parts[3]
 	}
 
-	// Use watcher cache — no extra pipe hit
-	content := w.LastContent()
-	encoded := base64.StdEncoding.EncodeToString([]byte(content))
-	return fmt.Sprintf("OK|%s\n", encoded)
-}
-
-func (d *Daemon) handleHistory(parts []string) string {
-	if len(parts) < 2 {
-		return "ERR|usage: HISTORY|<name>\n"
-	}
-	name := parts[1]
-
-	w, ok := d.getWatcher(name)
-	if !ok {
-		return fmt.Sprintf("ERR|session not found: %s\n", name)
+	name := ""
+	if len(parts) >= 2 {
+		name = parts[1]
 	}
 
-	content, err := w.FreshHistory()
-	if err != nil {
-		return fmt.Sprintf("ERR|history: %v\n", err)
-	}
-	encoded := base64.StdEncoding.EncodeToString([]byte(content))
-	return fmt.Sprintf("OK|%s\n", encoded)
-}
+	log.Printf("handleShow: caller=%q name=%q", caller, name)
 
-func (d *Daemon) handleStatus(parts []string) string {
-	if len(parts) < 2 {
-		return "ERR|usage: STATUS|<name>\n"
-	}
-	name := parts[1]
-
-	d.mu.Lock()
-	n, ok := d.lastNotify[name]
-	d.mu.Unlock()
-	if !ok {
-		// No notification yet, check watcher directly
-		w, wok := d.getWatcher(name)
-		if !wok {
-			return fmt.Sprintf("ERR|session not found: %s\n", name)
+	// Resolve name from lastUsed if empty
+	if name == "" {
+		if caller == "" {
+			log.Printf("handleShow: caller is empty, returning error")
+			return "ERR|session name required\n"
 		}
-		return fmt.Sprintf("OK|%s|%s|%d\n", name, w.Status(), 0)
+		log.Printf("handleShow: looking up lastUsed for caller=%q", caller)
+		last, ok := d.getLastUsed(caller)
+		log.Printf("handleShow: getLastUsed(%q) = %q, ok=%v", caller, last, ok)
+		if !ok {
+			return "ERR|no recent session for this caller\n"
+		}
+		name = last
 	}
-	return fmt.Sprintf("OK|%s|%s|%d\n", n.SessionName, n.Status, n.StableFor)
+
+	mode := "buffer"
+	if len(parts) >= 3 && parts[2] != "" {
+		mode = parts[2]
+	}
+
+	w, ok := d.getWatcher(name)
+	if !ok {
+		return fmt.Sprintf("ERR|session not found: %s\n", name)
+	}
+
+	var content string
+	var err error
+	switch mode {
+	case "history":
+		content, err = w.FreshHistory()
+		if err != nil {
+			return fmt.Sprintf("ERR|history: %v\n", err)
+		}
+	default:
+		content = w.LastContent()
+	}
+
+	d.setLastUsed(caller, name)
+
+	encoded := base64.StdEncoding.EncodeToString([]byte(content))
+	return fmt.Sprintf("OK|%s|%s\n", encoded, w.Status())
 }
 
 // --- Client helpers ---
@@ -202,9 +198,9 @@ func dialDaemon(command string) (string, error) {
 
 // DaemonSend sends a message to the named session via the daemon.
 // Returns status feedback from watcher (e.g. "submitted (status: idle → active)").
-func DaemonSend(name, message string) (string, error) {
+func DaemonSend(name, message, caller string) (string, error) {
 	encoded := base64.StdEncoding.EncodeToString([]byte(message))
-	resp, err := dialDaemon(fmt.Sprintf("SEND|%s|%s", name, encoded))
+	resp, err := dialDaemon(fmt.Sprintf("SEND|%s|%s|%s", name, encoded, caller))
 	if err != nil {
 		return "", err
 	}
@@ -226,53 +222,25 @@ func DaemonList() (string, error) {
 	return strings.TrimPrefix(resp, "OK|"), nil
 }
 
-// DaemonOutput returns the last n lines of output for a session.
-func DaemonOutput(name string, lines int) (string, error) {
-	resp, err := dialDaemon(fmt.Sprintf("OUTPUT|%s|%d", name, lines))
+// DaemonShow retrieves session content (buffer or history) with caller tracking.
+func DaemonShow(name, mode, caller string) (content string, status string, err error) {
+	resp, err := dialDaemon(fmt.Sprintf("SHOW|%s|%s|%s", name, mode, caller))
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
+	resp = strings.TrimSpace(resp)
 	if strings.HasPrefix(resp, "ERR|") {
-		return "", fmt.Errorf("%s", strings.TrimPrefix(resp, "ERR|"))
+		return "", "", fmt.Errorf("%s", strings.TrimPrefix(resp, "ERR|"))
 	}
-	encoded := strings.TrimPrefix(resp, "OK|")
-	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	// Response: OK|<base64content>|<status>
+	body := strings.TrimPrefix(resp, "OK|")
+	parts := strings.SplitN(body, "|", 2)
+	if len(parts) < 2 {
+		return "", "", fmt.Errorf("unexpected response: %s", resp)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(parts[0])
 	if err != nil {
-		return "", fmt.Errorf("decode output: %w", err)
+		return "", "", fmt.Errorf("decode: %w", err)
 	}
-	return string(decoded), nil
-}
-
-// DaemonHistory returns the command history for a session.
-// DaemonStatus returns the status of a session (e.g. "idle", "active", "dead").
-func DaemonStatus(name string) (string, error) {
-	resp, err := dialDaemon(fmt.Sprintf("STATUS|%s", name))
-	if err != nil {
-		return "", err
-	}
-	if strings.HasPrefix(resp, "ERR|") {
-		return "", fmt.Errorf("%s", strings.TrimPrefix(resp, "ERR|"))
-	}
-	// Response: OK|name|status|stableFor
-	parts := strings.Split(strings.TrimPrefix(resp, "OK|"), "|")
-	if len(parts) >= 2 {
-		return parts[1], nil
-	}
-	return resp, nil
-}
-
-func DaemonHistory(name string) (string, error) {
-	resp, err := dialDaemon(fmt.Sprintf("HISTORY|%s", name))
-	if err != nil {
-		return "", err
-	}
-	if strings.HasPrefix(resp, "ERR|") {
-		return "", fmt.Errorf("%s", strings.TrimPrefix(resp, "ERR|"))
-	}
-	encoded := strings.TrimPrefix(resp, "OK|")
-	decoded, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil {
-		return "", fmt.Errorf("decode history: %w", err)
-	}
-	return string(decoded), nil
+	return string(decoded), strings.TrimSpace(parts[1]), nil
 }

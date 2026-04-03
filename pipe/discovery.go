@@ -3,6 +3,7 @@ package pipe
 import (
 	"bufio"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -19,6 +20,7 @@ type Session struct {
 	HWND        string
 	LogFile     string
 	SessionFile string
+	AppRuntime  string
 }
 
 // Discover finds active Ghostty CP sessions. It tries two methods:
@@ -42,6 +44,7 @@ func discoverFromSessionFiles() ([]Session, error) {
 	}
 
 	var sessions []Session
+	var cleaned int
 	for _, subdir := range []string{"winui3", "win32"} {
 		sessDir := filepath.Join(localAppData, "ghostty", "control-plane", subdir, "sessions")
 		matches, err := filepath.Glob(filepath.Join(sessDir, "*.session"))
@@ -54,10 +57,17 @@ func discoverFromSessionFiles() ([]Session, error) {
 				continue
 			}
 			if !isProcessAlive(s.PID) {
+				if err := os.Remove(path); err == nil {
+					cleaned++
+				}
 				continue
 			}
+			s.AppRuntime = subdir
 			sessions = append(sessions, s)
 		}
+	}
+	if cleaned > 0 {
+		log.Printf("discovery: cleaned %d stale session files", cleaned)
 	}
 	return sessions, nil
 }
@@ -73,17 +83,20 @@ func discoverFromProcesses() ([]Session, error) {
 	var sessions []Session
 	for _, pid := range pids {
 		pipePath := fmt.Sprintf(`\\.\pipe\ghostty-winui3-ghostty-%d-%d`, pid, pid)
+		appRuntime := "winui3"
 		if err := Ping(pipePath); err != nil {
 			// Try win32 pattern
 			pipePath = fmt.Sprintf(`\\.\pipe\ghostty-win32-ghostty-%d-%d`, pid, pid)
+			appRuntime = "win32"
 			if err := Ping(pipePath); err != nil {
 				continue
 			}
 		}
 		sessions = append(sessions, Session{
-			Name:     fmt.Sprintf("ghostty-%d", pid),
-			PipePath: pipePath,
-			PID:      pid,
+			Name:       fmt.Sprintf("ghostty-%d", pid),
+			PipePath:   pipePath,
+			PID:        pid,
+			AppRuntime: appRuntime,
 		})
 	}
 	return sessions, nil

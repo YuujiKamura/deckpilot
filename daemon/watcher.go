@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"log"
+	"os"
 	"sync"
 	"time"
 
@@ -40,6 +41,7 @@ type Watcher struct {
 	mu          sync.Mutex
 	name        string
 	pipePath    string
+	sessionFile string
 	lastHash    string
 	stableCount int
 	status      string
@@ -50,14 +52,15 @@ type Watcher struct {
 }
 
 // NewWatcher creates a Watcher for the given session.
-func NewWatcher(name, pipePath string, onNotify func(BufferNotification)) *Watcher {
+func NewWatcher(name, pipePath, sessionFile string, onNotify func(BufferNotification)) *Watcher {
 	return &Watcher{
-		name:     name,
-		pipePath: pipePath,
-		status:   "active",
-		onNotify: onNotify,
-		reqCh:    make(chan pipeRequest, 16),
-		pauseCh:  make(chan chan struct{}),
+		name:        name,
+		pipePath:    pipePath,
+		sessionFile: sessionFile,
+		status:      "active",
+		onNotify:    onNotify,
+		reqCh:       make(chan pipeRequest, 16),
+		pauseCh:     make(chan chan struct{}),
 	}
 }
 
@@ -96,6 +99,11 @@ func (w *Watcher) Run(ctx context.Context) {
 		case <-ticker.C:
 			w.poll()
 			if w.Status() == "dead" {
+				if w.sessionFile != "" {
+					if err := os.Remove(w.sessionFile); err == nil {
+						log.Printf("watcher: removed session file for dead session %q", w.name)
+					}
+				}
 				log.Printf("watcher: session %q is dead, stopping", w.name)
 				return
 			}
