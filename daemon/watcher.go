@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -151,6 +152,18 @@ func (w *Watcher) handleRequest(req pipeRequest) {
 func (w *Watcher) poll() {
 	content, err := pipe.Tail(w.pipePath, 50)
 	if err != nil {
+		errStr := err.Error()
+		// NO_TABS = terminal has no tabs (session ended). Immediate dead, no retry.
+		if strings.Contains(errStr, "NO_TABS") {
+			w.mu.Lock()
+			w.status = "dead"
+			w.lastError = errStr
+			w.deadAt = time.Now()
+			w.mu.Unlock()
+			log.Printf("watcher[%s]: NO_TABS — session ended, marking dead immediately", w.name)
+			return
+		}
+		// Other errors: retry 3 times before dead
 		w.mu.Lock()
 		w.deadRetries++
 		retries := w.deadRetries
@@ -159,7 +172,7 @@ func (w *Watcher) poll() {
 		if retries >= 3 {
 			w.mu.Lock()
 			w.status = "dead"
-			w.lastError = err.Error()
+			w.lastError = errStr
 			w.deadAt = time.Now()
 			w.mu.Unlock()
 			log.Printf("watcher[%s]: marked dead after 3 consecutive failures. last error: %v", w.name, err)
