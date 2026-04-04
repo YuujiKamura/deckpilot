@@ -151,6 +151,25 @@ func (w *Watcher) poll() {
 	w.updateContent(content)
 }
 
+// Revive attempts to bring a dead watcher back to life by pinging the pipe.
+// Returns true if the watcher was successfully revived.
+func (w *Watcher) Revive() bool {
+	if w.Status() != "dead" {
+		return true // already alive
+	}
+	// Try to ping the pipe
+	if err := pipe.Ping(w.pipePath); err != nil {
+		return false
+	}
+	// Pipe is responsive again — reset status and poll
+	w.mu.Lock()
+	w.status = "active"
+	w.stableCount = 0
+	w.mu.Unlock()
+	w.poll()
+	return w.Status() != "dead"
+}
+
 func (w *Watcher) updateContent(content string) {
 	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
 

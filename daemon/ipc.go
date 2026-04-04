@@ -80,8 +80,24 @@ func (d *Daemon) handleSend(parts []string) string {
 
 	var resumeCh chan struct{}
 	if w, ok := d.getWatcher(name); ok {
-		resumeCh = w.PausePolling()
-		defer close(resumeCh)
+		// Revive dead watcher before pausing
+		if w.Status() == "dead" {
+			w.Revive()
+		}
+		if w.Status() != "dead" {
+			resumeCh = w.PausePolling()
+			defer close(resumeCh)
+		}
+	}
+
+	// Empty message = just send Enter directly
+	if msg == "" {
+		err := pipe.SendEnter(pipePath)
+		if err != nil {
+			return fmt.Sprintf("ERR|send: %v\n", err)
+		}
+		d.setLastUsed(caller, name)
+		return "OK|sent|enter\n"
 	}
 
 	// Capture buffer hash before send for retry detection
@@ -98,8 +114,8 @@ func (d *Daemon) handleSend(parts []string) string {
 
 	// Retry \r if buffer didn't change (known Ghostty CP drain issue)
 	if preHash != "" {
-		for retry := 0; retry < 3; retry++ {
-			time.Sleep(300 * time.Millisecond)
+		for retry := 0; retry < 5; retry++ {
+			time.Sleep(500 * time.Millisecond)
 			post, err := pipe.Tail(pipePath, 50)
 			if err != nil {
 				break
@@ -117,7 +133,7 @@ func (d *Daemon) handleSend(parts []string) string {
 	// Slash commands trigger TUI autocomplete that eats the first Enter.
 	// Send a second Enter to confirm the selection.
 	if strings.HasPrefix(msg, "/") {
-		time.Sleep(300 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond)
 		pipe.SendRaw(pipePath, []byte("\r"))
 	}
 
@@ -185,6 +201,18 @@ func (d *Daemon) handleShow(parts []string) string {
 		}
 	}
 
+	// If watcher is dead, try to revive it before giving up
+	if w.Status() == "dead" {
+		if !w.Revive() {
+			// Revive failed — try full session rediscovery
+			d.refreshSessions()
+			w, ok = d.getWatcher(name)
+			if !ok {
+				return fmt.Sprintf("ERR|session not found: %s\n", name)
+			}
+		}
+	}
+
 	var content string
 	var err error
 	switch mode {
@@ -198,6 +226,15 @@ func (d *Daemon) handleShow(parts []string) string {
 		if err != nil {
 			log.Printf("handleShow: FreshTail error: %v, falling back to LastContent", err)
 			content = w.LastContent()
+		}
+		// If content is still empty, try direct pipe access as fallback
+		if content == "" {
+			if pipePath, pipeOk := d.resolvePipePath(name); pipeOk {
+				if direct, directErr := pipe.Tail(pipePath, 50); directErr == nil && direct != "" {
+					content = direct
+					log.Printf("handleShow: recovered content via direct pipe.Tail for %s", name)
+				}
+			}
 		}
 	}
 
