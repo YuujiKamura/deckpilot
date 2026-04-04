@@ -1,0 +1,9 @@
+#!/bin/bash
+# Reject commits containing hardcoded user paths in public repo
+
+if git diff --cached --diff-filter=ACMR | grep -qE 'C:\\Users\\|C:/Users/|/c/Users/' | grep -v '.githooks/pre-commit'; then
+    echo "ERROR: Staged changes contain hardcoded user paths."
+    echo "Replace with dynamic path resolution (os.UserHomeDir, runtime.Caller, etc.)"
+    git diff --cached --diff-filter=ACMR | grep -n -E 'C:\\Users\\|C:/Users/|/c/Users/' | head -10
+    exit 1
+fi

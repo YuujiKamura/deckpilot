@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -12,6 +13,29 @@ import (
 )
 
 var deckpilotExe string
+
+// projectDir returns the directory containing this test file.
+func projectDir() string {
+	_, f, _, _ := runtime.Caller(0)
+	return filepath.Dir(f)
+}
+
+// findGo locates the Go compiler.
+func findGo() string {
+	if p, err := exec.LookPath("go"); err == nil {
+		return p
+	}
+	candidates := []string{
+		filepath.Join(os.Getenv("ProgramFiles"), "Go", "bin", "go.exe"),
+		filepath.Join(os.Getenv("USERPROFILE"), "go", "bin", "go.exe"),
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return c
+		}
+	}
+	return "go" // fallback
+}
 
 func TestMain(m *testing.M) {
 	// Build deckpilot.exe into a temp directory
@@ -23,9 +47,9 @@ func TestMain(m *testing.M) {
 	defer os.RemoveAll(tmp)
 
 	deckpilotExe = filepath.Join(tmp, "deckpilot.exe")
-	goExe := `C:\Program Files\Go\bin\go.exe`
+	goExe := findGo()
 	build := exec.Command(goExe, "build", "-o", deckpilotExe, ".")
-	build.Dir = `C:\Users\yuuji\deckpilot`
+	build.Dir = projectDir()
 	build.Stdout = os.Stdout
 	build.Stderr = os.Stderr
 	if err := build.Run(); err != nil {
@@ -48,7 +72,7 @@ func launchTestSession(t *testing.T, prompt string) *e2eSession {
 	t.Helper()
 
 	cmd := exec.Command(deckpilotExe, "launch", "claude", prompt)
-	cmd.Dir = `C:\Users\yuuji\deckpilot`
+	cmd.Dir = projectDir()
 
 	// launch writes session name to stdout (last line), diagnostics to stderr
 	out, err := cmd.Output()
