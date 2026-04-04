@@ -192,7 +192,7 @@ func waitForReady(session string, agent AgentDef, timeout time.Duration) error {
 	for time.Now().Before(deadline) {
 		time.Sleep(1 * time.Second)
 
-		output, _, err := daemon.DaemonShow(session, "buffer", caller)
+		output, status, err := daemon.DaemonShow(session, "buffer", caller)
 		if err != nil {
 			continue
 		}
@@ -208,7 +208,12 @@ func waitForReady(session string, agent AgentDef, timeout time.Duration) error {
 
 		// Check for ready
 		if trustHandled && strings.Contains(output, agent.ReadyStr) {
-			return nil
+			// Wait for buffer stability (idle status)
+			if status == "idle" {
+				return nil
+			}
+			// If not idle yet, we continue the loop and check again.
+			// The watcher updates status to "idle" after 1.5s of stability.
 		}
 	}
 
