@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -44,6 +45,14 @@ func New() *Daemon {
 // Run starts the daemon: auto-discovers sessions, starts watchers, and
 // listens for IPC connections on the daemon pipe.
 func (d *Daemon) Run() error {
+	// Set up log file for daemon diagnostics
+	logPath := filepath.Join(os.TempDir(), "deckpilot-daemon.log")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err == nil {
+		log.SetOutput(logFile)
+		log.Printf("=== daemon started pid=%d ===", os.Getpid())
+	}
+
 	// Auto-discover existing sessions.
 	sessions, err := pipe.Discover()
 	if err != nil {
