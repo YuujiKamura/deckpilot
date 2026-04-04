@@ -114,6 +114,13 @@ func (d *Daemon) handleSend(parts []string) string {
 		}
 	}
 
+	// Slash commands trigger TUI autocomplete that eats the first Enter.
+	// Send a second Enter to confirm the selection.
+	if strings.HasPrefix(msg, "/") {
+		time.Sleep(300 * time.Millisecond)
+		pipe.SendRaw(pipePath, []byte("\r"))
+	}
+
 	d.setLastUsed(caller, name)
 
 	if submitID == 0 {
