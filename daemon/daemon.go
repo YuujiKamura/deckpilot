@@ -100,7 +100,7 @@ func (d *Daemon) addSession(name, pipePath, sessionFile, appRuntime string) {
 		}
 	})
 	d.watchers[name] = w
-	go w.Run(context.TODO())
+	go w.Run(context.Background())
 	log.Printf("daemon: added session %q -> %s", name, pipePath)
 }
 
@@ -141,6 +141,7 @@ type sessionInfo struct {
 	PipePath   string `json:"pipe_path"`
 	AppRuntime string `json:"app_runtime"`
 	Status     string `json:"status"`
+	Uptime     string `json:"uptime"`
 }
 
 // listSessions returns a snapshot of all session info.
@@ -151,17 +152,35 @@ func (d *Daemon) listSessions() []sessionInfo {
 	var result []sessionInfo
 	for name, pipePath := range d.sessions {
 		status := "unknown"
+		uptime := ""
 		if w, ok := d.watchers[name]; ok {
 			status = w.Status()
+			p := w.Profile()
+			uptime = formatUptime(time.Since(p.CreatedAt))
 		}
 		result = append(result, sessionInfo{
 			Name:       name,
 			PipePath:   pipePath,
 			AppRuntime: d.appRuntimes[name],
 			Status:     status,
+			Uptime:     uptime,
 		})
 	}
 	return result
+}
+
+func formatUptime(d time.Duration) string {
+	d = d.Round(time.Second)
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	s := int(d.Seconds()) % 60
+	if h > 0 {
+		return fmt.Sprintf("%dh%02dm", h, m)
+	}
+	if m > 0 {
+		return fmt.Sprintf("%dm%02ds", m, s)
+	}
+	return fmt.Sprintf("%ds", s)
 }
 
 // refreshSessions re-discovers sessions, attempts to revive dead watchers, and adds new ones.
@@ -185,7 +204,7 @@ func (d *Daemon) refreshSessions() {
 		if w.Revive() {
 			// Pipe is responsive again — restart the watcher goroutine
 			log.Printf("daemon: revived session %q", name)
-			go w.Run(context.TODO())
+			go w.Run(context.Background())
 		} else {
 			// Keep the session in maps with status "dead" so it remains visible
 			log.Printf("daemon: session %q still dead, keeping entry", name)

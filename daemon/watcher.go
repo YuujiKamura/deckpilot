@@ -49,6 +49,12 @@ type Watcher struct {
 	lastError   string
 	deadAt      time.Time
 	deadRetries int
+	createdAt   time.Time
+	sendCount   int
+	showCount   int
+	pollSuccess int
+	pollFail    int
+	lastPollOK  time.Time
 	onNotify    func(BufferNotification)
 	reqCh       chan pipeRequest
 	pauseCh     chan chan struct{} // send pause signal, receive resume signal
@@ -61,6 +67,7 @@ func NewWatcher(name, pipePath, sessionFile string, onNotify func(BufferNotifica
 		pipePath:    pipePath,
 		sessionFile: sessionFile,
 		status:      "active",
+		createdAt:   time.Now(),
 		onNotify:    onNotify,
 		reqCh:       make(chan pipeRequest, 16),
 		pauseCh:     make(chan chan struct{}),
@@ -94,6 +101,7 @@ func (w *Watcher) Run(ctx context.Context) {
 
 		select {
 		case <-ctx.Done():
+			w.logProfile()
 			return
 		case req := <-w.reqCh:
 			w.handleRequest(req)
@@ -108,6 +116,7 @@ func (w *Watcher) Run(ctx context.Context) {
 				deadTime := w.deadAt
 				w.mu.Unlock()
 				log.Printf("watcher: session %q dead at %s, error: %s, stopping goroutine", w.name, deadTime.Format("15:04:05"), errMsg)
+				w.logProfile()
 				return
 			}
 		}
@@ -138,13 +147,16 @@ func (w *Watcher) handleRequest(req pipeRequest) {
 				res.content = fmt.Sprintf("sent (status: %s, no change yet)", newStatus)
 			}
 		}
+		w.sendCount++
 	case "tail":
 		res.content, res.err = pipe.Tail(w.pipePath, req.lines)
 		if res.err == nil {
 			w.updateContent(res.content)
 		}
+		w.showCount++
 	case "history":
 		res.content, res.err = pipe.History(w.pipePath)
+		w.showCount++
 	}
 	req.result <- res
 }
@@ -166,6 +178,7 @@ func (w *Watcher) poll() {
 		// Other errors: retry 3 times before dead
 		w.mu.Lock()
 		w.deadRetries++
+		w.pollFail++
 		retries := w.deadRetries
 		w.mu.Unlock()
 		log.Printf("watcher[%s]: pipe.Tail error (%d/3): %v", w.name, retries, err)
@@ -183,6 +196,8 @@ func (w *Watcher) poll() {
 	w.mu.Lock()
 	w.deadRetries = 0
 	w.mu.Unlock()
+	w.pollSuccess++
+	w.lastPollOK = time.Now()
 	w.updateContent(content)
 }
 
@@ -313,4 +328,47 @@ func (w *Watcher) LastContent() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.lastContent
+}
+
+// WatcherProfile holds session profiling counters.
+type WatcherProfile struct {
+	CreatedAt   time.Time
+	SendCount   int
+	ShowCount   int
+	PollSuccess int
+	PollFail    int
+	LastPollOK  time.Time
+	DeadAt      time.Time
+	LastError   string
+}
+
+// Profile returns a snapshot of this watcher's profiling counters.
+func (w *Watcher) Profile() WatcherProfile {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return WatcherProfile{
+		CreatedAt:   w.createdAt,
+		SendCount:   w.sendCount,
+		ShowCount:   w.showCount,
+		PollSuccess: w.pollSuccess,
+		PollFail:    w.pollFail,
+		LastPollOK:  w.lastPollOK,
+		DeadAt:      w.deadAt,
+		LastError:   w.lastError,
+	}
+}
+
+func (w *Watcher) logProfile() {
+	p := w.Profile()
+	uptime := time.Since(p.CreatedAt).Round(time.Second)
+	lastOK := "never"
+	if !p.LastPollOK.IsZero() {
+		lastOK = p.LastPollOK.Format("15:04:05")
+	}
+	deadInfo := ""
+	if !p.DeadAt.IsZero() {
+		deadInfo = fmt.Sprintf(", dead=%s err=%q", p.DeadAt.Format("15:04:05"), p.LastError)
+	}
+	log.Printf("profile[%s]: uptime=%s send=%d show=%d poll_ok=%d poll_fail=%d lastPollOK=%s%s",
+		w.name, uptime, p.SendCount, p.ShowCount, p.PollSuccess, p.PollFail, lastOK, deadInfo)
 }

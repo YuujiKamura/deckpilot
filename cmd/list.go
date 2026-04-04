@@ -13,6 +13,7 @@ type listEntry struct {
 	PipePath   string `json:"pipe_path"`
 	AppRuntime string `json:"app_runtime"`
 	Status     string `json:"status"`
+	Uptime     string `json:"uptime"`
 }
 
 // List prints all active sessions as a table.
@@ -39,8 +40,8 @@ func List() {
 		return
 	}
 
-	fmt.Printf("%-25s %-10s %s\n", "NAME", "RUNTIME", "STATUS")
+	fmt.Printf("%-25s %-10s %-10s %s\n", "NAME", "RUNTIME", "UPTIME", "STATUS")
 	for _, s := range sessions {
-		fmt.Printf("%-25s %-10s %s\n", s.Name, s.AppRuntime, s.Status)
+		fmt.Printf("%-25s %-10s %-10s %s\n", s.Name, s.AppRuntime, s.Uptime, s.Status)
 	}
 }
