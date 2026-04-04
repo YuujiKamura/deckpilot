@@ -1,9 +1,18 @@
 #!/bin/bash
-# Reject commits containing hardcoded user paths in public repo
+# Reject commits containing hardcoded user/home paths in public repo
+# Also catches PII patterns (company names, personal names from CLAUDE.md)
 
-if git diff --cached --diff-filter=ACMR | grep -qE 'C:\\Users\\|C:/Users/|/c/Users/' | grep -v '.githooks/pre-commit'; then
-    echo "ERROR: Staged changes contain hardcoded user paths."
-    echo "Replace with dynamic path resolution (os.UserHomeDir, runtime.Caller, etc.)"
-    git diff --cached --diff-filter=ACMR | grep -n -E 'C:\\Users\\|C:/Users/|/c/Users/' | head -10
+PATTERNS='C:\\Users\\|C:/Users/|/c/Users/|/home/[a-z]|/Users/[A-Z]|%USERPROFILE%|%HOMEPATH%|%APPDATA%|\\マイドライブ|H:/マイドライブ'
+
+# Exclude this hook file itself and go.sum
+DIFF=$(git diff --cached --diff-filter=ACMR -- ':!.githooks/*' ':!go.sum' ':!go.mod')
+
+if echo "$DIFF" | grep -qE "$PATTERNS"; then
+    echo "ERROR: Staged changes contain hardcoded paths or PII."
+    echo ""
+    echo "Detected patterns:"
+    echo "$DIFF" | grep -n -E "$PATTERNS" | head -15
+    echo ""
+    echo "Replace with dynamic resolution (os.UserHomeDir, runtime.Caller, os.Getenv, etc.)"
     exit 1
 fi
