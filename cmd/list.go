@@ -10,6 +10,7 @@ import (
 
 type listEntry struct {
 	Name       string `json:"name"`
+	PID        int    `json:"pid"`
 	PipePath   string `json:"pipe_path"`
 	AppRuntime string `json:"app_runtime"`
 	Status     string `json:"status"`
@@ -17,7 +18,7 @@ type listEntry struct {
 }
 
 // List prints all active sessions as a table.
-func List() {
+func List(args []string) {
 	if err := daemon.EnsureRunning(); err != nil {
 		fmt.Fprintf(os.Stderr, "daemon: %v\n", err)
 		os.Exit(1)
@@ -27,6 +28,11 @@ func List() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "list: %v\n", err)
 		os.Exit(1)
+	}
+
+	if len(args) > 0 && args[0] == "--json" {
+		fmt.Println(raw)
+		return
 	}
 
 	var sessions []listEntry
@@ -40,8 +46,8 @@ func List() {
 		return
 	}
 
-	fmt.Printf("%-25s %-10s %-10s %s\n", "NAME", "RUNTIME", "UPTIME", "STATUS")
+	fmt.Printf("%-25s %-6s %-10s %-10s %s\n", "NAME", "PID", "RUNTIME", "UPTIME", "STATUS")
 	for _, s := range sessions {
-		fmt.Printf("%-25s %-10s %-10s %s\n", s.Name, s.AppRuntime, s.Uptime, s.Status)
+		fmt.Printf("%-25s %-6d %-10s %-10s %s\n", s.Name, s.PID, s.AppRuntime, s.Uptime, s.Status)
 	}
 }

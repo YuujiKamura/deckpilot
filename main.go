@@ -10,7 +10,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		cmd.List() // default: show sessions
+		cmd.List(nil) // default: show sessions
 		return
 	}
 	switch os.Args[1] {
@@ -23,7 +23,7 @@ func main() {
 	case "send":
 		cmd.Send(os.Args[2:])
 	case "list", "ls":
-		cmd.List()
+		cmd.List(os.Args[2:])
 	case "show":
 		cmd.Show(os.Args[2:])
 	case "launch":
