@@ -24,6 +24,20 @@ var agents = map[string]AgentDef{
 		TrustStr:  "",
 		SubmitKey: "\r",
 	},
+	"sonnet": {
+		Cmd:       "claude",
+		Args:      []string{"--dangerously-skip-permissions", "--model", "sonnet"},
+		ReadyStr:  ">",
+		TrustStr:  "",
+		SubmitKey: "\r",
+	},
+	"haiku": {
+		Cmd:       "claude",
+		Args:      []string{"--dangerously-skip-permissions", "--model", "haiku"},
+		ReadyStr:  ">",
+		TrustStr:  "",
+		SubmitKey: "\r",
+	},
 	"gemini": {
 		Cmd:       "gemini",
 		Args:      []string{},
