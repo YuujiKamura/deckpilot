@@ -178,7 +178,11 @@ func (d *Daemon) handleShow(parts []string) string {
 
 	w, ok := d.getWatcher(name)
 	if !ok {
-		return fmt.Sprintf("ERR|session not found: %s\n", name)
+		d.refreshSessions()
+		w, ok = d.getWatcher(name)
+		if !ok {
+			return fmt.Sprintf("ERR|session not found: %s\n", name)
+		}
 	}
 
 	var content string
@@ -190,7 +194,11 @@ func (d *Daemon) handleShow(parts []string) string {
 			return fmt.Sprintf("ERR|history: %v\n", err)
 		}
 	default:
-		content = w.LastContent()
+		content, err = w.FreshTail(50)
+		if err != nil {
+			log.Printf("handleShow: FreshTail error: %v, falling back to LastContent", err)
+			content = w.LastContent()
+		}
 	}
 
 	d.setLastUsed(caller, name)
