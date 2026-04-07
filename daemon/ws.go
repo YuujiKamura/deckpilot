@@ -29,9 +29,11 @@ type WSMessage struct {
 
 // WSResponse represents the JSON response sent back to the browser
 type WSResponse struct {
+	Cmd     string      `json:"cmd,omitempty"`
 	Status  string      `json:"status"`
 	Message string      `json:"message,omitempty"`
 	Data    interface{} `json:"data,omitempty"`
+	Mode    string      `json:"mode,omitempty"`
 }
 
 // ServeWS starts the WebSocket server on the given address (e.g., ":8080")
@@ -69,7 +71,7 @@ func (d *Daemon) handleWS(w http.ResponseWriter, r *http.Request) {
 
 		case "LIST":
 			sessions := d.listSessions()
-			resp = WSResponse{Status: "OK", Data: sessions}
+			resp = WSResponse{Cmd: "LIST", Status: "OK", Data: sessions}
 
 		case "SEND":
 			// We reuse the existing logic by simulating the pipe parts
@@ -77,12 +79,19 @@ func (d *Daemon) handleWS(w http.ResponseWriter, r *http.Request) {
 			parts := []string{"SEND", req.Session, req.Msg, req.Caller}
 			out := d.handleSend(parts)
 			resp = d.parseIPCResponse(out)
+			resp.Cmd = "SEND"
 
 		case "SHOW":
 			// parts: ["SHOW", name, mode, caller]
-			parts := []string{"SHOW", req.Session, req.Mode, req.Caller}
+			mode := req.Mode
+			if mode == "" {
+				mode = "buffer"
+			}
+			parts := []string{"SHOW", req.Session, mode, req.Caller}
 			out := d.handleShow(parts)
 			resp = d.parseIPCResponse(out)
+			resp.Cmd = "SHOW"
+			resp.Mode = mode
 
 		default:
 			resp = WSResponse{Status: "ERR", Message: "Unknown command: " + req.Cmd}
