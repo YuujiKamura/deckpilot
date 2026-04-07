@@ -11,12 +11,15 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
+
+	"github.com/gorilla/websocket"
 )
 
 // Session represents a discovered Ghostty control plane session.
 type Session struct {
 	Name        string
 	PipePath    string
+	WsURL       string
 	PID         int
 	HWND        string
 	LogFile     string
@@ -41,7 +44,7 @@ func discoverFromSessionFiles() ([]Session, error) {
 
 	var sessions []Session
 	var cleaned int
-	for _, subdir := range []string{"winui3", "win32"} {
+	for _, subdir := range []string{"winui3", "win32", "web"} {
 		sessDir := filepath.Join(localAppData, "ghostty", "control-plane", subdir, "sessions")
 		matches, err := filepath.Glob(filepath.Join(sessDir, "*.session"))
 		if err != nil {
@@ -68,8 +71,16 @@ func discoverFromSessionFiles() ([]Session, error) {
 				}
 				continue
 			}
-			if err := Ping(s.PipePath); err != nil {
-				continue
+			if s.WsURL != "" {
+				// Web session: validate via WebSocket ping
+				if err := PingWS(s.WsURL); err != nil {
+					continue
+				}
+			} else {
+				// Named Pipe session: validate via pipe ping
+				if err := Ping(s.PipePath); err != nil {
+					continue
+				}
 			}
 			s.AppRuntime = subdir
 			sessions = append(sessions, s)
@@ -163,6 +174,8 @@ func parseSessionFile(path string) (Session, error) {
 			s.Name = v
 		case "pipe_path":
 			s.PipePath = ensurePipePrefix(v)
+		case "ws_url":
+			s.WsURL = v
 		case "pid":
 			s.PID, _ = strconv.Atoi(v)
 		case "hwnd":
@@ -171,8 +184,8 @@ func parseSessionFile(path string) (Session, error) {
 			s.LogFile = v
 		}
 	}
-	if s.PipePath == "" {
-		return Session{}, fmt.Errorf("no pipe_path in %s", path)
+	if s.PipePath == "" && s.WsURL == "" {
+		return Session{}, fmt.Errorf("no pipe_path or ws_url in %s", path)
 	}
 	return s, nil
 }
@@ -195,4 +208,31 @@ func isProcessAlive(pid int) bool {
 	}
 	defer syscall.CloseHandle(h)
 	return true
+}
+
+// PingWS sends a PING command over WebSocket and expects a PONG response.
+func PingWS(wsURL string) error {
+	dialer := websocket.Dialer{
+		HandshakeTimeout: dialTimeout,
+	}
+	conn, _, err := dialer.Dial(wsURL, nil)
+	if err != nil {
+		return fmt.Errorf("ws dial %s: %w", wsURL, err)
+	}
+	defer conn.Close()
+
+	conn.SetWriteDeadline(time.Now().Add(readDeadline))
+	if err := conn.WriteMessage(websocket.TextMessage, []byte("PING")); err != nil {
+		return fmt.Errorf("ws write: %w", err)
+	}
+
+	conn.SetReadDeadline(time.Now().Add(readDeadline))
+	_, msg, err := conn.ReadMessage()
+	if err != nil {
+		return fmt.Errorf("ws read: %w", err)
+	}
+	if !strings.HasPrefix(string(msg), PrefixPONG) {
+		return fmt.Errorf("ws unexpected: %s", string(msg))
+	}
+	return nil
 }
