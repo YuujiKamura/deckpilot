@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -23,17 +24,12 @@ type Session struct {
 	AppRuntime  string
 }
 
-// Discover finds active Ghostty CP sessions. It tries two methods:
-// 1. Scan .session files under LOCALAPPDATA (if they exist)
-// 2. Probe known pipe name patterns for running ghostty processes
+// Discover finds active Ghostty CP sessions.
 func Discover() ([]Session, error) {
-	// Method 1: .session files
 	sessions, _ := discoverFromSessionFiles()
 	if len(sessions) > 0 {
 		return sessions, nil
 	}
-
-	// Method 2: probe pipes for known ghostty PIDs
 	return discoverFromProcesses()
 }
 
@@ -56,13 +52,22 @@ func discoverFromSessionFiles() ([]Session, error) {
 			if err != nil {
 				continue
 			}
+
+			// --- THE FIX: Introduce 10s Grace Period ---
+			info, err := os.Stat(path)
+			if err == nil && time.Since(info.ModTime()) < 10*time.Second {
+				s.AppRuntime = subdir
+				sessions = append(sessions, s)
+				continue
+			}
+			// -------------------------------------------
+
 			if !isProcessAlive(s.PID) {
 				if err := os.Remove(path); err == nil {
 					cleaned++
 				}
 				continue
 			}
-			// Validate pipe before adding
 			if err := Ping(s.PipePath); err != nil {
 				continue
 			}
@@ -76,8 +81,6 @@ func discoverFromSessionFiles() ([]Session, error) {
 	return sessions, nil
 }
 
-// discoverFromProcesses finds ghostty processes and probes their expected pipe paths.
-// Ghostty WinUI3 pipes follow: \\.\pipe\ghostty-winui3-ghostty-<PID>-<PID>
 func discoverFromProcesses() ([]Session, error) {
 	pids, err := findGhosttyPIDs()
 	if err != nil {
@@ -89,7 +92,6 @@ func discoverFromProcesses() ([]Session, error) {
 		pipePath := fmt.Sprintf(`\\.\pipe\ghostty-winui3-ghostty-%d-%d`, pid, pid)
 		appRuntime := "winui3"
 		if err := Ping(pipePath); err != nil {
-			// Try win32 pattern
 			pipePath = fmt.Sprintf(`\\.\pipe\ghostty-win32-ghostty-%d-%d`, pid, pid)
 			appRuntime = "win32"
 			if err := Ping(pipePath); err != nil {
@@ -106,7 +108,6 @@ func discoverFromProcesses() ([]Session, error) {
 	return sessions, nil
 }
 
-// findGhosttyPIDs enumerates all running processes and returns PIDs of ghostty.exe.
 func findGhosttyPIDs() ([]int, error) {
 	const TH32CS_SNAPPROCESS = 0x00000002
 	snap, err := syscall.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
@@ -136,7 +137,6 @@ func findGhosttyPIDs() ([]int, error) {
 	}
 	return pids, nil
 }
-
 
 func parseSessionFile(path string) (Session, error) {
 	f, err := os.Open(path)
@@ -181,16 +181,7 @@ func ensurePipePrefix(p string) string {
 	if strings.HasPrefix(p, `\\.\pipe\`) {
 		return p
 	}
-	if strings.HasPrefix(p, `\.\pipe\`) {
-		return `\` + p
-	}
-	if strings.HasPrefix(p, `//./pipe/`) {
-		return strings.Replace(p, `/`, `\`, -1)
-	}
-	if strings.HasPrefix(p, `/./pipe/`) {
-		return `\` + strings.Replace(p, `/`, `\`, -1)
-	}
-	return `\\.\pipe\` + p
+	return `\\.\pipe\` + strings.TrimPrefix(p, `\\.\pipe\`)
 }
 
 func isProcessAlive(pid int) bool {
@@ -202,6 +193,6 @@ func isProcessAlive(pid int) bool {
 	if err != nil {
 		return false
 	}
-	syscall.CloseHandle(h)
+	defer syscall.CloseHandle(h)
 	return true
 }
