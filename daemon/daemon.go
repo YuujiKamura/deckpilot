@@ -24,7 +24,8 @@ func IPCPipePath() string {
 type Daemon struct {
 	mu            sync.Mutex
 	sessions      map[string]string   // session name -> pipe path
-	appRuntimes   map[string]string   // session name -> app runtime (winui3/win32)
+	wsURLs        map[string]string   // session name -> WebSocket URL (for web sessions)
+	appRuntimes   map[string]string   // session name -> app runtime (winui3/win32/web)
 	watchers      map[string]*Watcher // session name -> watcher
 	lastNotify    map[string]BufferNotification
 	onNotify      func(BufferNotification) // external callback (optional)
@@ -35,6 +36,7 @@ type Daemon struct {
 func New() *Daemon {
 	return &Daemon{
 		sessions:    make(map[string]string),
+		wsURLs:      make(map[string]string),
 		appRuntimes: make(map[string]string),
 		watchers:    make(map[string]*Watcher),
 		lastNotify:  make(map[string]BufferNotification),
@@ -59,7 +61,7 @@ func (d *Daemon) Run() error {
 		log.Printf("discover warning: %v", err)
 	}
 	for _, s := range sessions {
-		d.addSession(s.Name, s.PipePath, s.SessionFile, s.PID, s.AppRuntime)
+		d.addSession(s.Name, s.PipePath, s.WsURL, s.SessionFile, s.PID, s.AppRuntime)
 	}
 	log.Printf("daemon: discovered %d session(s)", len(sessions))
 
@@ -77,7 +79,7 @@ func (d *Daemon) Run() error {
 				_, exists := d.sessions[s.Name]
 				d.mu.Unlock()
 				if !exists {
-					d.addSession(s.Name, s.PipePath, s.SessionFile, s.PID, s.AppRuntime)
+					d.addSession(s.Name, s.PipePath, s.WsURL, s.SessionFile, s.PID, s.AppRuntime)
 					log.Printf("daemon: re-discovered new session %q", s.Name)
 				}
 			}
@@ -109,7 +111,7 @@ func (d *Daemon) Run() error {
 }
 
 // addSession registers a session and starts a watcher goroutine.
-func (d *Daemon) addSession(name, pipePath, sessionFile string, pid int, appRuntime string) {
+func (d *Daemon) addSession(name, pipePath, wsURL, sessionFile string, pid int, appRuntime string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -117,6 +119,9 @@ func (d *Daemon) addSession(name, pipePath, sessionFile string, pid int, appRunt
 		return
 	}
 	d.sessions[name] = pipePath
+	if wsURL != "" {
+		d.wsURLs[name] = wsURL
+	}
 	d.appRuntimes[name] = appRuntime
 
 	w := NewWatcher(name, pipePath, sessionFile, pid, func(n BufferNotification) {
@@ -156,6 +161,14 @@ func (d *Daemon) resolvePipePath(name string) (string, bool) {
 	return p, ok
 }
 
+// resolveWsURL looks up the WebSocket URL for a session name.
+func (d *Daemon) resolveWsURL(name string) (string, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	u, ok := d.wsURLs[name]
+	return u, ok
+}
+
 // getWatcher returns the watcher for a session.
 func (d *Daemon) getWatcher(name string) (*Watcher, bool) {
 	d.mu.Lock()
@@ -168,6 +181,7 @@ type sessionInfo struct {
 	Name       string `json:"name"`
 	PID        int    `json:"pid"`
 	PipePath   string `json:"pipe_path"`
+	WsURL      string `json:"ws_url,omitempty"`
 	AppRuntime string `json:"app_runtime"`
 	Status     string `json:"status"`
 	Uptime     string `json:"uptime"`
@@ -193,6 +207,7 @@ func (d *Daemon) listSessions() []sessionInfo {
 			Name:       name,
 			PID:        pid,
 			PipePath:   pipePath,
+			WsURL:      d.wsURLs[name],
 			AppRuntime: d.appRuntimes[name],
 			Status:     status,
 			Uptime:     uptime,
@@ -248,7 +263,7 @@ func (d *Daemon) refreshSessions() {
 		return
 	}
 	for _, s := range sessions {
-		d.addSession(s.Name, s.PipePath, s.SessionFile, s.PID, s.AppRuntime)
+		d.addSession(s.Name, s.PipePath, s.WsURL, s.SessionFile, s.PID, s.AppRuntime)
 	}
 }
 

@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/Microsoft/go-winio"
 	"github.com/YuujiKamura/deckpilot/pipe"
+	"github.com/gorilla/websocket"
 )
 
 // handleConn reads one line from the connection, dispatches the command,
@@ -73,9 +75,26 @@ func (d *Daemon) handleSend(parts []string) string {
 	if !ok {
 		d.refreshSessions()
 		pipePath, ok = d.resolvePipePath(name)
-		if !ok {
+	}
+
+	// If no pipe path, try WebSocket (web sessions)
+	if !ok || pipePath == "" {
+		wsURL, wsOk := d.resolveWsURL(name)
+		if !wsOk {
+			d.refreshSessions()
+			wsURL, wsOk = d.resolveWsURL(name)
+		}
+		if !wsOk || wsURL == "" {
 			return fmt.Sprintf("ERR|session not found: %s\n", name)
 		}
+		// Send via WebSocket using CP protocol
+		payload := msg + "\r"
+		resp, err := sendViaWS(wsURL, payload)
+		if err != nil {
+			return fmt.Sprintf("ERR|ws send: %v\n", err)
+		}
+		d.setLastUsed(caller, name)
+		return fmt.Sprintf("OK|ws|%s\n", resp)
 	}
 
 	var resumeCh chan struct{}
@@ -252,6 +271,42 @@ func (d *Daemon) handleShow(parts []string) string {
 
 	encoded := base64.StdEncoding.EncodeToString([]byte(content))
 	return fmt.Sprintf("OK|%s|%s\n", encoded, w.Status())
+}
+
+// sendViaWS sends a message to a ghostty-web session via WebSocket using the CP protocol.
+// Protocol: INPUT|{from}|{base64text} → QUEUED|ghostty-web|INPUT|{cmdId}
+func sendViaWS(wsURL, msg string) (string, error) {
+	u, err := url.Parse(wsURL)
+	if err != nil {
+		return "", fmt.Errorf("parse ws url: %w", err)
+	}
+
+	dialer := websocket.Dialer{
+		HandshakeTimeout: 5 * time.Second,
+	}
+	conn, _, err := dialer.Dial(u.String(), nil)
+	if err != nil {
+		return "", fmt.Errorf("ws dial: %w", err)
+	}
+	defer conn.Close()
+
+	encoded := base64.StdEncoding.EncodeToString([]byte(msg))
+	payload := fmt.Sprintf("INPUT|deckpilot|%s", encoded)
+	log.Printf("sendViaWS: sending %q to %s", payload, wsURL)
+
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(payload)); err != nil {
+		return "", fmt.Errorf("ws write: %w", err)
+	}
+
+	// Read response with timeout
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, respBytes, err := conn.ReadMessage()
+	if err != nil {
+		return "", fmt.Errorf("ws read: %w", err)
+	}
+	resp := string(respBytes)
+	log.Printf("sendViaWS: response %q", resp)
+	return resp, nil
 }
 
 // --- Client helpers ---
