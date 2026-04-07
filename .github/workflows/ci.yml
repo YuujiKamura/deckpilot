@@ -7,7 +7,7 @@ on:
 
 jobs:
   build-and-test:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -15,10 +15,7 @@ jobs:
         with:
           go-version: "1.24"
 
-      - name: Build (cross-compile for Windows)
-        env:
-          GOOS: windows
-          GOARCH: amd64
+      - name: Build
         run: go build -o deckpilot.exe .
 
       - name: Test
