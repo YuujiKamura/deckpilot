@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deckpilot WebSocket Bridge Test</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f4f4f9;
+            color: #333;
+            max-width: 800px;
+            margin: 40px auto;
+            padding: 20px;
+        }
+        .card {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 { color: #2c3e50; margin-top: 0; }
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+            font-weight: bold;
+        }
+        .status.connected { background-color: #d4edda; color: #155724; }
+        .status.disconnected { background-color: #f8d7da; color: #721c24; }
+        .status.waiting { background-color: #fff3cd; color: #856404; }
+        
+        pre {
+            background-color: #272822;
+            color: #f8f8f2;
+            padding: 15px;
+            border-radius: 4px;
+            overflow-x: auto;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background-color 0.2s;
+        }
+        button:hover { background-color: #0056b3; }
+        button:disabled { background-color: #ccc; cursor: not-allowed; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>Deckpilot Bridge Test</h1>
+        <div id="status" class="status waiting">Connecting to WebSocket...</div>
+        
+        <div style="margin-bottom: 20px; display: flex; gap: 10px; align-items: center;">
+            <button id="listBtn" disabled>Refresh List (LIST)</button>
+            <select id="sessionSelect" style="flex-grow: 1; padding: 8px; border-radius: 4px; border: 1px solid #ccc;">
+                <option value="">-- Select Session --</option>
+            </select>
+            <button id="showBtn" disabled>Show Buffer</button>
+        </div>
+
+        <div style="margin-bottom: 20px;">
+            <textarea id="messageInput" style="width: 100%; height: 80px; padding: 10px; border-radius: 4px; border: 1px solid #ccc; box-sizing: border-box; font-family: inherit;" placeholder="Type message to send..."></textarea>
+            <div style="text-align: right; margin-top: 10px;">
+                <button id="sendBtn" disabled>Send (SEND)</button>
+            </div>
+        </div>
+
+        <h3>Response Data:</h3>
+        <pre id="output">Waiting for data...</pre>
+    </div>
+
+    <script>
+        const statusEl = document.getElementById('status');
+        const outputEl = document.getElementById('output');
+        const listBtn = document.getElementById('listBtn');
+        const showBtn = document.getElementById('showBtn');
+        const sendBtn = document.getElementById('sendBtn');
+        const sessionSelect = document.getElementById('sessionSelect');
+        const messageInput = document.getElementById('messageInput');
+        
+        let socket;
+
+        function connect() {
+            socket = new WebSocket('ws://localhost:8099/ws');
+
+            socket.onopen = () => {
+                statusEl.textContent = 'Connected to Deckpilot Daemon (ws://localhost:8099/ws)';
+                statusEl.className = 'status connected';
+                listBtn.disabled = false;
+                showBtn.disabled = false;
+                sendBtn.disabled = false;
+                
+                // Automatically send LIST on connect
+                sendList();
+            };
+
+            socket.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                
+                // If it looks like a LIST response (contains session data in 'data' field)
+                if (data.data && Array.isArray(data.data)) {
+                    updateSessionSelect(data.data);
+                } else if (data.sessions && Array.isArray(data.sessions)) {
+                    updateSessionSelect(data.sessions);
+                } else if (Array.isArray(data)) {
+                    updateSessionSelect(data);
+                }
+
+                outputEl.textContent = JSON.stringify(data, null, 2);
+                console.log('Received:', data);
+            };
+
+            socket.onclose = () => {
+                statusEl.textContent = 'Disconnected from Daemon. Is "deckpilot daemon" running?';
+                statusEl.className = 'status disconnected';
+                listBtn.disabled = true;
+                showBtn.disabled = true;
+                sendBtn.disabled = true;
+                
+                // Try to reconnect in 3 seconds
+                setTimeout(connect, 3000);
+            };
+
+            socket.onerror = (error) => {
+                console.error('WebSocket Error:', error);
+            };
+        }
+
+        function updateSessionSelect(sessions) {
+            const currentVal = sessionSelect.value;
+            sessionSelect.innerHTML = '<option value="">-- Select Session --</option>';
+
+            sessions.forEach(s => {
+                const name = typeof s === 'string' ? s : (s.name || s.Session);
+                if (!name) return;
+                
+                const option = document.createElement('option');
+                option.value = name;
+                option.textContent = name;
+                if (name === currentVal) option.selected = true;
+                sessionSelect.appendChild(option);
+            });
+        }
+
+        function sendList() {
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                const msg = { cmd: 'LIST' };
+                socket.send(JSON.stringify(msg));
+                outputEl.textContent = 'Sending LIST command...';
+            }
+        }
+
+        function sendShow() {
+            const session = sessionSelect.value;
+            if (!session) {
+                alert('Please select a session first');
+                return;
+            }
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                const msg = { cmd: 'SHOW', session: session, mode: 'buffer' };
+                socket.send(JSON.stringify(msg));
+                outputEl.textContent = `Sending SHOW command for session: ${session}...`;
+            }
+        }
+
+        function sendMessage() {
+            const session = sessionSelect.value;
+            const text = messageInput.value;
+            if (!session) {
+                alert('Please select a session first');
+                return;
+            }
+            if (!text) {
+                alert('Please enter a message');
+                return;
+            }
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                const msg = { 
+                    cmd: 'SEND', 
+                    session: session, 
+                    msg: btoa(unescape(encodeURIComponent(text))) // UTF-8 safe btoa
+                };
+                socket.send(JSON.stringify(msg));
+                outputEl.textContent = `Sending message to session: ${session}...`;
+                messageInput.value = ''; // Clear after sending
+            }
+        }
+
+        listBtn.addEventListener('click', sendList);
+        showBtn.addEventListener('click', sendShow);
+        sendBtn.addEventListener('click', sendMessage);
+
+        // Initial connection
+        connect();
+    </script>
+</body>
+</html>
