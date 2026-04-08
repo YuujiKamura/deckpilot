@@ -42,10 +42,18 @@ func discoverFromSessionFiles() ([]Session, error) {
 		return nil, fmt.Errorf("LOCALAPPDATA not set")
 	}
 
+	searchDirs := []string{
+		filepath.Join(localAppData, "ghostty", "control-plane", "winui3", "sessions"),
+		filepath.Join(localAppData, "ghostty", "control-plane", "win32", "sessions"),
+		filepath.Join(localAppData, "ghostty", "control-plane", "web", "sessions"),
+		filepath.Join(localAppData, "WindowsTerminal", "control-plane", "winui3", "sessions"),
+		filepath.Join(localAppData, "Packages", "WindowsTerminalDev_8wekyb3d8bbwe", "LocalCache", "Local", "WindowsTerminal", "control-plane", "winui3", "sessions"),
+		filepath.Join(localAppData, "Packages", "Microsoft.WindowsTerminal_8wekyb3d8bbwe", "LocalCache", "Local", "WindowsTerminal", "control-plane", "winui3", "sessions"),
+	}
+
 	var sessions []Session
 	var cleaned int
-	for _, subdir := range []string{"winui3", "win32", "web"} {
-		sessDir := filepath.Join(localAppData, "ghostty", "control-plane", subdir, "sessions")
+	for _, sessDir := range searchDirs {
 		matches, err := filepath.Glob(filepath.Join(sessDir, "*.session"))
 		if err != nil {
 			continue
@@ -59,7 +67,15 @@ func discoverFromSessionFiles() ([]Session, error) {
 			// --- THE FIX: Introduce 10s Grace Period ---
 			info, err := os.Stat(path)
 			if err == nil && time.Since(info.ModTime()) < 10*time.Second {
-				s.AppRuntime = subdir
+				if strings.Contains(sessDir, "WindowsTerminal") {
+					s.AppRuntime = "wt"
+				} else if strings.Contains(sessDir, "win32") {
+					s.AppRuntime = "win32"
+				} else if strings.Contains(sessDir, "web") {
+					s.AppRuntime = "web"
+				} else {
+					s.AppRuntime = "winui3"
+				}
 				sessions = append(sessions, s)
 				continue
 			}
@@ -82,7 +98,15 @@ func discoverFromSessionFiles() ([]Session, error) {
 					continue
 				}
 			}
-			s.AppRuntime = subdir
+			if strings.Contains(sessDir, "WindowsTerminal") {
+				s.AppRuntime = "wt"
+			} else if strings.Contains(sessDir, "win32") {
+				s.AppRuntime = "win32"
+			} else if strings.Contains(sessDir, "web") {
+				s.AppRuntime = "web"
+			} else {
+				s.AppRuntime = "winui3"
+			}
 			sessions = append(sessions, s)
 		}
 	}
