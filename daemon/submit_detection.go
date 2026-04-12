@@ -50,6 +50,44 @@ func ExtractInputLine(buf string) string {
 	return result
 }
 
+// visibilityProbe returns a short leading token from msg that the TUI will
+// render contiguously regardless of word-wrap boundaries. It is the first
+// run of non-space runes, capped at 24 runes. Returns "" if msg is empty or
+// starts with whitespace only.
+//
+// Used by handleSend Phase 1.5 to detect that the TUI has consumed the INPUT
+// without false negatives caused by display-width wrapping.
+func visibilityProbe(msg string) string {
+	const maxRunes = 24
+	count := 0
+	end := 0
+	for i, r := range msg {
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+			if count > 0 {
+				break
+			}
+			continue
+		}
+		count++
+		end = i + len(string(r))
+		if count >= maxRunes {
+			break
+		}
+	}
+	if count == 0 {
+		return ""
+	}
+	// Find where the probe starts (first non-space)
+	start := 0
+	for i, r := range msg {
+		if r != ' ' && r != '\t' && r != '\n' && r != '\r' {
+			start = i
+			break
+		}
+	}
+	return msg[start:end]
+}
+
 // tailLines returns the last n lines of buf as a single string.
 func tailLines(buf string, n int) string {
 	lines := strings.Split(buf, "\n")
@@ -135,14 +173,19 @@ func ConfirmSubmit(
 			// Text-moved-out: the text we typed must appear somewhere in buffer
 			// (confirming Phase 1 delivery), but NOT in the bottom input area
 			// (confirming submit caused it to scroll up into history).
+			// TUI word-wraps long text, so we match on a short probe (the first
+			// run of non-space runes) instead of the full preSubmitText.
 			if preSubmitText != "" {
-				inBuf := strings.Contains(buf, preSubmitText)
-				inInputArea := containsInTail(buf, preSubmitText, inputAreaTailLines)
-				if inBuf && !inInputArea {
-					return SubmitResult{
-						Status:    SubmitOKCleared,
-						ElapsedMs: int(time.Since(start).Milliseconds()),
-						Evidence:  evidence,
+				probe := visibilityProbe(preSubmitText)
+				if probe != "" {
+					inBuf := strings.Contains(buf, probe)
+					inInputArea := containsInTail(buf, probe, inputAreaTailLines)
+					if inBuf && !inInputArea {
+						return SubmitResult{
+							Status:    SubmitOKCleared,
+							ElapsedMs: int(time.Since(start).Milliseconds()),
+							Evidence:  evidence,
+						}
 					}
 				}
 			}
