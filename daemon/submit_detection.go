@@ -8,29 +8,43 @@ import (
 type SubmitStatus string
 
 const (
-	SubmitOKCleared   SubmitStatus = "ok_cleared"    // 入力行がクリアされた
-	SubmitOKThinking  SubmitStatus = "ok_thinking"   // TUI が thinking 状態になった
-	SubmitFailedError SubmitStatus = "failed_error"  // TUI にエラー表示
-	SubmitUnconfirmed SubmitStatus = "unconfirmed"   // タイムアウト
+	SubmitOKCleared   SubmitStatus = "ok_cleared"   // text moved out of input area
+	SubmitOKThinking  SubmitStatus = "ok_thinking"  // TUI shows thinking indicator
+	SubmitFailedError SubmitStatus = "failed_error" // TUI shows error string
+	SubmitUnconfirmed SubmitStatus = "unconfirmed"  // polling timeout
 )
 
 type SubmitResult struct {
 	Status    SubmitStatus
 	ElapsedMs int
-	Evidence  string // 判定根拠の末尾数行(debug用、切り詰めて40行以内)
+	Evidence  string
 }
 
-// ExtractInputLine returns the last line starting with "> " in buf.
-// Returns "" if no prompt line found.
-// TUI's input prompt is typically "> something text here" on its own line.
-// For multi-line input, we want the LAST such line (the current prompt).
+// inputAreaTailLines is the number of trailing buffer lines considered part of
+// the TUI's input/status area. Most TUIs keep the prompt + a couple of status
+// rows at the bottom (claude-code has prompt + ~3 status lines; cmd/bash use 1).
+const inputAreaTailLines = 6
+
+// promptChars are characters that commonly lead a prompt line.
+// Checked at the start of a stripped line (after leading whitespace).
+var promptChars = []string{"❯", ">", "$", "%", "#"}
+
+// ExtractInputLine returns the last line whose first non-space rune is a
+// common prompt character. Returns "" if no such line is found. The returned
+// string is right-trimmed of trailing whitespace/CR.
 func ExtractInputLine(buf string) string {
-	lines := strings.Split(buf, "\n")
 	result := ""
-	for _, line := range lines {
-		trimmed := strings.TrimRight(line, "\r")
-		if strings.HasPrefix(trimmed, "> ") || trimmed == ">" {
-			result = trimmed
+	for _, line := range strings.Split(buf, "\n") {
+		trimmed := strings.TrimRight(line, " \r\t")
+		lt := strings.TrimLeft(trimmed, " \t")
+		if lt == "" {
+			continue
+		}
+		for _, pc := range promptChars {
+			if strings.HasPrefix(lt, pc) {
+				result = trimmed
+				break
+			}
 		}
 	}
 	return result
@@ -49,29 +63,49 @@ func tailLines(buf string, n int) string {
 func findLineContaining(buf, substr string) string {
 	for _, line := range strings.Split(buf, "\n") {
 		if strings.Contains(line, substr) {
-			return strings.TrimRight(line, "\r")
+			return strings.TrimRight(line, " \r\t")
 		}
 	}
 	return ""
+}
+
+// containsInTail reports whether substr appears in the last tailN lines of buf.
+func containsInTail(buf, substr string, tailN int) bool {
+	if substr == "" {
+		return false
+	}
+	lines := strings.Split(buf, "\n")
+	start := len(lines) - tailN
+	if start < 0 {
+		start = 0
+	}
+	for _, line := range lines[start:] {
+		if strings.Contains(line, substr) {
+			return true
+		}
+	}
+	return false
 }
 
 // ConfirmSubmit observes the pipe's buffer to detect whether a submit happened.
 //
 // Arguments:
 //
-//	tailFn       - function to read current buffer tail (abstracted for testability)
-//	thinkingStr  - per-agent indicator string (e.g. "Gesticulating" for Claude). Empty = skip.
-//	errorStr     - per-agent failure indicator. Empty = skip.
-//	preInputLine - the input line content snapshot taken BEFORE sending (e.g. "> atomic番号42")
-//	               used to confirm the text moved from prompt into history.
-//	timeout      - total observation budget.
-//	pollInterval - how often to re-read buffer (e.g. 50ms).
+//	tailFn        - reads current buffer tail (abstracted for testability).
+//	thinkingStr   - per-agent indicator string (e.g. "Gesticulating"). Empty = skip.
+//	errorStr      - per-agent failure indicator. Empty = skip.
+//	preSubmitText - the actual text we sent. Used to detect submit by checking
+//	                whether the text has moved out of the input area (last few
+//	                buffer lines) into scrollback history. Empty = skip this
+//	                signal (detection relies on thinkingStr only).
+//	timeout       - total observation budget.
+//	pollInterval  - how often to re-read buffer.
 //
-// Returns as soon as a definitive signal fires, or at timeout.
-// NEVER retries sending. Observation only.
+// Priority: errorStr > thinkingStr > text-moved-out-of-input > timeout.
+// Never retries sending. Observation only.
 func ConfirmSubmit(
 	tailFn func() (string, error),
-	thinkingStr, errorStr, preInputLine string,
+	thinkingStr, errorStr, preSubmitText string,
 	timeout, pollInterval time.Duration,
 ) SubmitResult {
 	start := time.Now()
@@ -82,42 +116,38 @@ func ConfirmSubmit(
 		if err == nil && buf != "" {
 			evidence := tailLines(buf, 40)
 
-			// 1. errorStr: 非空かつ buf に含まれる → SubmitFailedError
 			if errorStr != "" && strings.Contains(buf, errorStr) {
-				line := findLineContaining(buf, errorStr)
 				return SubmitResult{
 					Status:    SubmitFailedError,
 					ElapsedMs: int(time.Since(start).Milliseconds()),
-					Evidence:  line,
+					Evidence:  findLineContaining(buf, errorStr),
 				}
 			}
 
-			// 2. thinkingStr: 非空かつ buf に含まれる → SubmitOKThinking
 			if thinkingStr != "" && strings.Contains(buf, thinkingStr) {
-				line := findLineContaining(buf, thinkingStr)
 				return SubmitResult{
 					Status:    SubmitOKThinking,
 					ElapsedMs: int(time.Since(start).Milliseconds()),
-					Evidence:  line,
+					Evidence:  findLineContaining(buf, thinkingStr),
 				}
 			}
 
-			// 3. 入力行クリア: 現 buf の ExtractInputLine() が空 or "> " or ">"
-			//    かつ preInputLine (空でなければ) が buf に含まれる（履歴にスクロールアップ）
-			currentInput := ExtractInputLine(buf)
-			inputCleared := currentInput == "" || currentInput == "> " || currentInput == ">"
-			historyConfirmed := preInputLine == "" || strings.Contains(buf, preInputLine)
-
-			if inputCleared && historyConfirmed {
-				return SubmitResult{
-					Status:    SubmitOKCleared,
-					ElapsedMs: int(time.Since(start).Milliseconds()),
-					Evidence:  evidence,
+			// Text-moved-out: the text we typed must appear somewhere in buffer
+			// (confirming Phase 1 delivery), but NOT in the bottom input area
+			// (confirming submit caused it to scroll up into history).
+			if preSubmitText != "" {
+				inBuf := strings.Contains(buf, preSubmitText)
+				inInputArea := containsInTail(buf, preSubmitText, inputAreaTailLines)
+				if inBuf && !inInputArea {
+					return SubmitResult{
+						Status:    SubmitOKCleared,
+						ElapsedMs: int(time.Since(start).Milliseconds()),
+						Evidence:  evidence,
+					}
 				}
 			}
 		}
 
-		// まだ確定できない: 次のポーリングまで待つ
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			break
@@ -129,12 +159,10 @@ func ConfirmSubmit(
 		}
 	}
 
-	// 4. タイムアウト
 	buf, _ := tailFn()
-	evidence := tailLines(buf, 40)
 	return SubmitResult{
 		Status:    SubmitUnconfirmed,
 		ElapsedMs: int(time.Since(start).Milliseconds()),
-		Evidence:  evidence,
+		Evidence:  tailLines(buf, 40),
 	}
 }

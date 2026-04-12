@@ -144,22 +144,40 @@ func (d *Daemon) handleSend(parts []string) string {
 		return "OK|sent|enter\n"
 	}
 
-	// Phase 0: submit 前に入力行スナップショット
-	preBuf, _ := pipe.Tail(pipePath, 40)
-	preInputLine := ExtractInputLine(preBuf)
-
-	// Phase 1+2: INPUT → \r (atomic, リトライなし)
-	_, err = pipe.SendWithSubmit(pipePath, msg, "\r")
-	if err != nil {
-		return fmt.Sprintf("ERR|send: %v\n", err)
+	// Phase 1: INPUT (text only, no submit yet)
+	if err := pipe.SendKeys(pipePath, msg); err != nil {
+		return fmt.Sprintf("ERR|send text: %v\n", err)
 	}
 
-	// Phase 3: 観測による submit 成功/失敗判定
-	// TODO #15-B: session registry から agent 名を lookup し、agents.go から ThinkingStr を引く
+	// Phase 1.5: wait until the text is visible in the TUI buffer.
+	// This replaces the broken pipe.SendWithSubmit ACK model (whose ACK meant
+	// "CP server received" not "TUI consumed"). When our text appears in the
+	// rendered buffer, we know the TUI has actually picked it up and the
+	// following \r keystroke will land on the right state.
+	textVisible := false
+	for i := 0; i < 20; i++ { // up to ~600ms
+		buf, _ := pipe.Tail(pipePath, 20)
+		if strings.Contains(buf, msg) {
+			textVisible = true
+			break
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	if !textVisible {
+		return fmt.Sprintf("ERR|text_not_visible|phase1_timeout\n")
+	}
+
+	// Phase 2: submit via RAW_INPUT(\r) as a standalone key event.
+	if err := pipe.SendEnter(pipePath); err != nil {
+		return fmt.Sprintf("ERR|submit enter: %v\n", err)
+	}
+
+	// Phase 3: observe whether submit actually took effect.
+	// TODO #15-B: session registry で agent lookup して ThinkingStr を引く
 	thinkingStr := ""
 	errorStr := ""
 	tailFn := func() (string, error) { return pipe.Tail(pipePath, 40) }
-	result := ConfirmSubmit(tailFn, thinkingStr, errorStr, preInputLine,
+	result := ConfirmSubmit(tailFn, thinkingStr, errorStr, msg,
 		2*time.Second, 50*time.Millisecond)
 
 	d.setLastUsed(caller, name)
