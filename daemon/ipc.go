@@ -149,16 +149,19 @@ func (d *Daemon) handleSend(parts []string) string {
 		return fmt.Sprintf("ERR|send text: %v\n", err)
 	}
 
-	// Phase 1.5: wait until the text is visible in the TUI buffer.
-	// The TUI may word-wrap long messages (inserting \n within the rendered
-	// text), so we can't use Contains(buf, msg) directly. Instead probe for a
-	// short leading token — the first chunk of non-space chars up to 24 runes
-	// — which the TUI will render contiguously regardless of wrap boundary.
+	// Let Ghostty process INPUT before we check visibility / send \r.
+	// Matches watcher.go handleRequest 100ms gap and avoids stale-scrollback
+	// probe matches when the same message is sent repeatedly.
+	time.Sleep(100 * time.Millisecond)
+
+	// Phase 1.5: wait until the text is visible in the TUI buffer. Compare on a
+	// whitespace-stripped basis so word-wrap and spacing differences don't cause
+	// false timeouts before submit.
 	probe := visibilityProbe(msg)
 	textVisible := false
 	for i := 0; i < 20; i++ { // up to ~600ms
 		buf, _ := pipe.Tail(pipePath, 20)
-		if probe == "" || strings.Contains(buf, probe) {
+		if probeVisibleInBuffer(buf, probe) {
 			textVisible = true
 			break
 		}
