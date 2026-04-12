@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"bufio"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -145,35 +144,25 @@ func (d *Daemon) handleSend(parts []string) string {
 		return "OK|sent|enter\n"
 	}
 
-	// Capture buffer hash before send for retry detection
-	preHash := ""
-	if pre, err := pipe.Tail(pipePath, 50); err == nil {
-		preHash = fmt.Sprintf("%x", sha256.Sum256([]byte(pre)))
-	}
+	// Phase 0: submit 前に入力行スナップショット
+	preBuf, _ := pipe.Tail(pipePath, 40)
+	preInputLine := ExtractInputLine(preBuf)
 
-	// Phase 1: INPUT(text) → ACK wait → Phase 2: RAW_INPUT(\r) → ACK wait
-	submitID, err := pipe.SendWithSubmit(pipePath, msg, "\r")
+	// Phase 1+2: INPUT → \r (atomic, リトライなし)
+	_, err = pipe.SendWithSubmit(pipePath, msg, "\r")
 	if err != nil {
 		return fmt.Sprintf("ERR|send: %v\n", err)
 	}
 
-	// Retry \r if buffer didn't change (known Ghostty CP drain issue)
-	if preHash != "" {
-		for retry := 0; retry < 5; retry++ {
-			time.Sleep(500 * time.Millisecond)
-			post, err := pipe.Tail(pipePath, 50)
-			if err != nil {
-				break
-			}
-			postHash := fmt.Sprintf("%x", sha256.Sum256([]byte(post)))
-			if postHash != preHash {
-				log.Printf("handleSend: buffer changed after %d retries", retry)
-				break
-			}
-			log.Printf("handleSend: buffer unchanged, resending \\r (retry %d)", retry+1)
-			pipe.SendRaw(pipePath, []byte("\r"))
-		}
-	}
+	// Phase 3: 観測による submit 成功/失敗判定
+	// TODO #15-B: session registry から agent 名を lookup し、agents.go から ThinkingStr を引く
+	thinkingStr := ""
+	errorStr := ""
+	tailFn := func() (string, error) { return pipe.Tail(pipePath, 40) }
+	result := ConfirmSubmit(tailFn, thinkingStr, errorStr, preInputLine,
+		2*time.Second, 50*time.Millisecond)
+
+	d.setLastUsed(caller, name)
 
 	// Slash commands trigger TUI autocomplete that eats the first Enter.
 	// Send a second Enter to confirm the selection.
@@ -182,12 +171,15 @@ func (d *Daemon) handleSend(parts []string) string {
 		pipe.SendRaw(pipePath, []byte("\r"))
 	}
 
-	d.setLastUsed(caller, name)
-
-	if submitID == 0 {
-		return "OK|sent|no_ack\n"
+	switch result.Status {
+	case SubmitOKCleared, SubmitOKThinking:
+		return fmt.Sprintf("OK|submit_ok|%s|%dms\n", result.Status, result.ElapsedMs)
+	case SubmitFailedError:
+		return fmt.Sprintf("ERR|submit_failed|%s\n", result.Evidence)
+	case SubmitUnconfirmed:
+		return fmt.Sprintf("ERR|submit_unconfirmed|timeout_after_%dms\n", result.ElapsedMs)
 	}
-	return fmt.Sprintf("OK|ack|%d\n", submitID)
+	return "ERR|submit_unknown\n"
 }
 
 func (d *Daemon) handleList() string {
