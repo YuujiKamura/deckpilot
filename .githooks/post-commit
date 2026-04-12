@@ -1,0 +1,26 @@
+#!/bin/bash
+# Build deckpilot.exe and deploy into local ghostty-win checkout (if present).
+# Runs after every commit. Safe no-op when ghostty-win is absent.
+#
+# Skip via: DECKPILOT_SKIP_POSTCOMMIT=1 git commit ...
+
+set -u
+
+if [ "${DECKPILOT_SKIP_POSTCOMMIT:-0}" = "1" ]; then
+    exit 0
+fi
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT" || exit 0
+
+# Build with ldflags (Version/Commit/BuildTime) and deploy.
+# Fall back silently on failure so commit is never blocked.
+if command -v go >/dev/null 2>&1; then
+    if ! bash "$REPO_ROOT/scripts/build.sh" >"$REPO_ROOT/tmp/deckpilot-postcommit-build.log" 2>&1; then
+        echo "[post-commit] build.sh failed; skipping deploy (log: $REPO_ROOT/tmp/deckpilot-postcommit-build.log)" >&2
+        exit 0
+    fi
+else
+    echo "[post-commit] go not found; skipping deploy" >&2
+    exit 0
+fi
