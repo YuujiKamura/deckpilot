@@ -7,6 +7,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/YuujiKamura/deckpilot/pipe"
@@ -14,12 +15,14 @@ import (
 
 // BufferNotification is emitted when the watcher detects a change or stability.
 type BufferNotification struct {
-	SessionName string
-	Content     string
-	Hash        string
-	Changed     bool
-	StableFor   int
-	Status      string
+	SessionName   string
+	Content       string
+	Hash          string
+	Changed       bool
+	StableFor     int
+	Status        string
+	StatusChanged bool   // true if status changed from previous poll
+	PrevStatus    string // previous status before change
 }
 
 // pipeRequest is a command queued to the watcher's pipe goroutine.
@@ -41,11 +44,13 @@ type Watcher struct {
 	mu          sync.Mutex
 	name        string
 	pid         int
+	hwnd        syscall.Handle
 	pipePath    string
 	sessionFile string
 	lastHash    string
 	stableCount int
 	status      string
+	lastStatus  string // previous status for transition detection
 	lastContent string
 	lastError   string
 	deadAt      time.Time
@@ -62,13 +67,15 @@ type Watcher struct {
 }
 
 // NewWatcher creates a Watcher for the given session.
-func NewWatcher(name, pipePath, sessionFile string, pid int, onNotify func(BufferNotification)) *Watcher {
+func NewWatcher(name, pipePath, sessionFile string, pid int, hwndStr string, onNotify func(BufferNotification)) *Watcher {
 	return &Watcher{
 		name:        name,
 		pid:         pid,
+		hwnd:        ParseHWND(hwndStr),
 		pipePath:    pipePath,
 		sessionFile: sessionFile,
 		status:      "active",
+		lastStatus:  "unknown", // initial state for transition detection
 		createdAt:   time.Now(),
 		onNotify:    onNotify,
 		reqCh:       make(chan pipeRequest, 16),
@@ -79,7 +86,7 @@ func NewWatcher(name, pipePath, sessionFile string, pid int, onNotify func(Buffe
 // Run is the single goroutine that owns all pipe I/O for this session.
 // Poll on ticker, drain requests between polls.
 func (w *Watcher) Run(ctx context.Context) {
-	log.Printf("watcher[%s]: goroutine started, pipe=%s", w.name, w.pipePath)
+	log.Printf("watcher[%s]: goroutine started, pipe=%s, hwnd=%v", w.name, w.pipePath, w.hwnd)
 	if ctx == nil {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithCancel(context.Background())
@@ -112,7 +119,8 @@ func (w *Watcher) Run(ctx context.Context) {
 			<-resumeCh
 		case <-ticker.C:
 			w.poll()
-			if w.Status() == "dead" {
+			currentStatus := w.Status()
+			if currentStatus == "dead" {
 				w.mu.Lock()
 				errMsg := w.lastError
 				deadTime := w.deadAt
@@ -164,17 +172,44 @@ func (w *Watcher) handleRequest(req pipeRequest) {
 }
 
 func (w *Watcher) poll() {
+	// 1. Check OS-level hang FIRST (independent of pipe health)
+	isHung := IsHungAppWindow(w.hwnd)
+	if isHung {
+		w.mu.Lock()
+		prevStatus := w.lastStatus
+		// PULL BACK: If we were dead but now the OS says we're hung,
+		// it means the process is still there, just not responding.
+		w.status = "stalled"
+		statusChanged := w.status != prevStatus
+		w.mu.Unlock()
+
+		if statusChanged && w.onNotify != nil {
+			w.onNotify(BufferNotification{
+				SessionName:   w.name,
+				Status:        "stalled",
+				StatusChanged: true,
+				PrevStatus:    prevStatus,
+			})
+			w.mu.Lock()
+			w.lastStatus = "stalled"
+			w.mu.Unlock()
+		}
+		// If hung, don't let it die yet.
+	}
+
 	content, err := pipe.Tail(w.pipePath, 50)
 	if err != nil {
 		errStr := err.Error()
 		// NO_TABS = terminal has no tabs (session ended). Immediate dead, no retry.
 		if strings.Contains(errStr, "NO_TABS") {
 			w.mu.Lock()
-			w.status = "dead"
+			if w.status != "stalled" {
+				w.status = "dead"
+			}
 			w.lastError = errStr
 			w.deadAt = time.Now()
 			w.mu.Unlock()
-			log.Printf("watcher[%s]: NO_TABS — session ended, marking dead immediately", w.name)
+			log.Printf("watcher[%s]: NO_TABS — session ended, marking dead", w.name)
 			return
 		}
 		// Other errors: retry 3 times before dead
@@ -186,7 +221,9 @@ func (w *Watcher) poll() {
 		log.Printf("watcher[%s]: pipe.Tail error (%d/3): %v", w.name, retries, err)
 		if retries >= 3 {
 			w.mu.Lock()
-			w.status = "dead"
+			if w.status != "stalled" {
+				w.status = "dead"
+			}
 			w.lastError = errStr
 			w.deadAt = time.Now()
 			w.mu.Unlock()
@@ -196,8 +233,12 @@ func (w *Watcher) poll() {
 	}
 	// Reset retry counter on success
 	w.mu.Lock()
+	deadRetries := w.deadRetries
 	w.deadRetries = 0
 	w.mu.Unlock()
+	if deadRetries > 0 {
+		log.Printf("watcher[%s]: recovered from pipe.Tail error", w.name)
+	}
 	w.pollSuccess++
 	w.lastPollOK = time.Now()
 	w.updateContent(content)
@@ -230,26 +271,47 @@ func (w *Watcher) updateContent(content string) {
 
 	w.lastContent = content
 	changed := hash != w.lastHash
-	if changed {
-		w.lastHash = hash
-		w.stableCount = 0
-		w.status = "active"
+	prevStatus := w.lastStatus
+
+	// Only update status if not already marked as stalled by poll()
+	if w.status != "stalled" {
+		if changed {
+			w.lastHash = hash
+			w.stableCount = 0
+			w.status = "active"
+		} else {
+			w.stableCount++
+			if w.stableCount >= 3 {
+				w.status = "idle"
+			}
+		}
 	} else {
-		w.stableCount++
-		if w.stableCount >= 3 {
-			w.status = "idle"
+		// Recovery: if we were stalled, but IsHung check in poll() didn't 
+		// find a hang this time, we should recover.
+		if !IsHungAppWindow(w.hwnd) {
+			w.status = "active" // Recover to active on any update
 		}
 	}
 
+	// Check for status transition
+	statusChanged := w.status != prevStatus
+
 	if w.onNotify != nil {
 		w.onNotify(BufferNotification{
-			SessionName: w.name,
-			Content:     content,
-			Hash:        hash,
-			Changed:     changed,
-			StableFor:   w.stableCount,
-			Status:      w.status,
+			SessionName:   w.name,
+			Content:       content,
+			Hash:          hash,
+			Changed:       changed,
+			StableFor:     w.stableCount,
+			Status:        w.status,
+			StatusChanged: statusChanged,
+			PrevStatus:    prevStatus,
 		})
+	}
+
+	// Update lastStatus for next iteration
+	if statusChanged {
+		w.lastStatus = w.status
 	}
 }
 

@@ -1,9 +1,12 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,21 +18,38 @@ import (
 	"github.com/YuujiKamura/deckpilot/pipe"
 )
 
+// IdleHook defines an action to execute when a session becomes idle
+type IdleHook struct {
+	Type            string            `json:"type"`            // "http", "stdout", "send", "callback"
+	URL             string            `json:"url"`             // for "http" type
+	Method          string            `json:"method"`          // for "http" type (default: POST)
+	Headers         map[string]string `json:"headers"`         // for "http" type
+	Message         string            `json:"message"`         // for "stdout" and "send" types
+	TargetSession   string            `json:"target_session"`   // for "send" type
+	SessionFilter   string            `json:"session_filter"`   // optional: only trigger for specific sessions
+	CallbackSession string            `json:"callback_session"` // for "callback" type - session to notify
+	OneTime         bool              `json:"one_time"`         // if true, remove hook after execution
+}
+
 // IPCPipePath returns the named pipe path for the daemon.
 func IPCPipePath() string {
+	if suffix := os.Getenv("DECKPILOT_PIPE_SUFFIX"); suffix != "" {
+		return `\\.\pipe\deckpilot-daemon-` + suffix
+	}
 	return `\\.\pipe\deckpilot-daemon`
 }
 
 // Daemon manages Ghostty sessions and handles IPC from the CLI.
 type Daemon struct {
-	mu            sync.Mutex
-	sessions      map[string]string   // session name -> pipe path
-	wsURLs        map[string]string   // session name -> WebSocket URL (for web sessions)
-	appRuntimes   map[string]string   // session name -> app runtime (winui3/win32/web)
-	watchers      map[string]*Watcher // session name -> watcher
-	lastNotify    map[string]BufferNotification
-	onNotify      func(BufferNotification) // external callback (optional)
-	lastUsed      map[string]string        // caller -> session name
+	mu          sync.Mutex
+	sessions    map[string]string   // session name -> pipe path
+	wsURLs      map[string]string   // session name -> WebSocket URL (for web sessions)
+	appRuntimes map[string]string   // session name -> app runtime (winui3/win32/web)
+	watchers    map[string]*Watcher // session name -> watcher
+	lastNotify  map[string]BufferNotification
+	onNotify    func(BufferNotification) // external callback (optional)
+	lastUsed    map[string]string        // caller -> session name
+	idleHooks   []IdleHook               // hooks to execute on idle transition
 }
 
 // New creates a new Daemon instance.
@@ -41,6 +61,7 @@ func New() *Daemon {
 		watchers:    make(map[string]*Watcher),
 		lastNotify:  make(map[string]BufferNotification),
 		lastUsed:    make(map[string]string),
+		idleHooks:   make([]IdleHook, 0),
 	}
 }
 
@@ -61,7 +82,7 @@ func (d *Daemon) Run() error {
 		log.Printf("discover warning: %v", err)
 	}
 	for _, s := range sessions {
-		d.addSession(s.Name, s.PipePath, s.WsURL, s.SessionFile, s.PID, s.AppRuntime)
+		d.addSession(s.Name, s.PipePath, s.WsURL, s.SessionFile, s.PID, s.HWND, s.AppRuntime)
 	}
 	log.Printf("daemon: discovered %d session(s)", len(sessions))
 
@@ -98,7 +119,7 @@ func (d *Daemon) Run() error {
 }
 
 // addSession registers a session and starts a watcher goroutine.
-func (d *Daemon) addSession(name, pipePath, wsURL, sessionFile string, pid int, appRuntime string) {
+func (d *Daemon) addSession(name, pipePath, wsURL, sessionFile string, pid int, hwnd string, appRuntime string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -111,10 +132,20 @@ func (d *Daemon) addSession(name, pipePath, wsURL, sessionFile string, pid int, 
 	}
 	d.appRuntimes[name] = appRuntime
 
-	w := NewWatcher(name, pipePath, sessionFile, pid, func(n BufferNotification) {
+	w := NewWatcher(name, pipePath, sessionFile, pid, hwnd, func(n BufferNotification) {
 		d.mu.Lock()
 		d.lastNotify[name] = n
 		d.mu.Unlock()
+
+		// Execute hooks on status transitions
+		if n.StatusChanged {
+			// Trigger on: active → idle (task complete)
+			// Trigger on: any → stalled (hang detected)
+			if (n.PrevStatus == "active" && n.Status == "idle") || n.Status == "stalled" {
+				d.executeStatusHooks(n)
+			}
+		}
+
 		if d.onNotify != nil {
 			d.onNotify(n)
 		}
@@ -250,7 +281,7 @@ func (d *Daemon) refreshSessions() {
 		return
 	}
 	for _, s := range sessions {
-		d.addSession(s.Name, s.PipePath, s.WsURL, s.SessionFile, s.PID, s.AppRuntime)
+		d.addSession(s.Name, s.PipePath, s.WsURL, s.SessionFile, s.PID, s.HWND, s.AppRuntime)
 	}
 }
 
@@ -306,4 +337,339 @@ func pingDaemon() bool {
 		return false
 	}
 	return string(buf[:n]) == "PONG\n"
+}
+
+// AddIdleHook adds a hook to be executed when sessions become idle
+func (d *Daemon) AddIdleHook(hook IdleHook) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.idleHooks = append(d.idleHooks, hook)
+	log.Printf("daemon: added idle hook type=%s", hook.Type)
+}
+
+// RemoveIdleHooks removes all idle hooks
+func (d *Daemon) RemoveIdleHooks() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.idleHooks = make([]IdleHook, 0)
+	log.Printf("daemon: removed all idle hooks")
+}
+
+// ListIdleHooks returns a copy of current idle hooks
+func (d *Daemon) ListIdleHooks() []IdleHook {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	result := make([]IdleHook, len(d.idleHooks))
+	copy(result, d.idleHooks)
+	return result
+}
+
+// executeStatusHooks executes all registered hooks for status transitions
+func (d *Daemon) executeStatusHooks(notification BufferNotification) {
+	d.mu.Lock()
+	hooks := make([]IdleHook, len(d.idleHooks))
+	copy(hooks, d.idleHooks)
+	d.mu.Unlock()
+
+	var oneTimeHooks []IdleHook // collect one-time hooks for removal
+
+	for _, hook := range hooks {
+		// Apply session filter if specified
+		if hook.SessionFilter != "" && hook.SessionFilter != notification.SessionName {
+			continue
+		}
+
+		if hook.OneTime {
+			oneTimeHooks = append(oneTimeHooks, hook)
+		}
+
+		go func(h IdleHook, n BufferNotification) {
+			if err := d.executeHook(h, n); err != nil {
+				log.Printf("daemon: hook execution error: %v", err)
+			}
+		}(hook, notification)
+	}
+
+	// Remove one-time hooks after execution
+	if len(oneTimeHooks) > 0 {
+		go func() {
+			// Small delay to ensure hook execution completes
+			time.Sleep(100 * time.Millisecond)
+			d.removeOneTimeHooks(oneTimeHooks)
+		}()
+	}
+}
+
+// executeHook executes a single hook
+func (d *Daemon) executeHook(hook IdleHook, notification BufferNotification) error {
+	prefix := "[NOTIFY]"
+	verb := "idle"
+	if notification.Status == "stalled" {
+		prefix = "[STALLED]"
+		verb = "hung"
+	}
+
+	switch hook.Type {
+	case "stdout":
+		message := hook.Message
+		if message == "" {
+			message = fmt.Sprintf("Session %s is %s", notification.SessionName, verb)
+		}
+		log.Printf("STATUS_HOOK_STDOUT: %s", message)
+		fmt.Printf("%s: %s\n", prefix, message)
+
+		// Also write to file for verification
+		verificationFile := filepath.Join(os.TempDir(), "deckpilot-status-verification.txt")
+		timestamp := time.Now().Format("2006-01-02 15:04:05")
+		content := fmt.Sprintf("[%s] %s\n", timestamp, message)
+		os.WriteFile(verificationFile, []byte(content), 0644)
+		log.Printf("STATUS_HOOK_FILE: wrote to %s", verificationFile)
+
+		return nil
+
+	case "http":
+		return d.executeHTTPHook(hook, notification)
+
+	case "send":
+		return d.executeSendHook(hook, notification)
+
+	case "callback":
+		return d.executeCallbackHook(hook, notification)
+
+	default:
+		return fmt.Errorf("unknown hook type: %s", hook.Type)
+	}
+}
+
+// executeHTTPHook sends HTTP notification
+func (d *Daemon) executeHTTPHook(hook IdleHook, notification BufferNotification) error {
+	if hook.URL == "" {
+		return fmt.Errorf("http hook missing URL")
+	}
+
+	method := hook.Method
+	if method == "" {
+		method = "POST"
+	}
+
+	payload := map[string]interface{}{
+		"event":       "idle_transition",
+		"session":     notification.SessionName,
+		"status":      notification.Status,
+		"prev_status": notification.PrevStatus,
+		"timestamp":   time.Now().Unix(),
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("json marshal error: %w", err)
+	}
+
+	req, err := http.NewRequest(method, hook.URL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return fmt.Errorf("create request error: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range hook.Headers {
+		req.Header.Set(k, v)
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("http request error: %w", err)
+	}
+	defer resp.Body.Close()
+
+	log.Printf("daemon: idle hook http %s %s -> %d", method, hook.URL, resp.StatusCode)
+	return nil
+}
+
+// executeSendHook sends message to target session
+func (d *Daemon) executeSendHook(hook IdleHook, notification BufferNotification) error {
+	targetSession := hook.TargetSession
+	if targetSession == "" {
+		return fmt.Errorf("send hook missing target_session")
+	}
+
+	message := hook.Message
+	if message == "" {
+		message = fmt.Sprintf("Session %s is now idle", notification.SessionName)
+	}
+
+	watcher, ok := d.getWatcher(targetSession)
+	if !ok {
+		return fmt.Errorf("target session %s not found", targetSession)
+	}
+
+	_, err := watcher.Send(message)
+	if err != nil {
+		return fmt.Errorf("send to session %s error: %w", targetSession, err)
+	}
+
+	log.Printf("daemon: idle hook sent message to session %s", targetSession)
+	return nil
+}
+
+// executeCallbackHook sends notification back to the callback session
+func (d *Daemon) executeCallbackHook(hook IdleHook, notification BufferNotification) error {
+	callbackSession := hook.CallbackSession
+	if callbackSession == "" {
+		return fmt.Errorf("callback hook missing callback_session")
+	}
+
+	prefix := "[NOTIFY]"
+	verb := "idle"
+	if notification.Status == "stalled" {
+		prefix = "[STALLED]"
+		verb = "hung"
+	}
+
+	message := fmt.Sprintf("%s %s is %s\n", prefix, notification.SessionName, verb)
+	if hook.Message != "" {
+		message = hook.Message + "\n"
+	}
+
+	watcher, ok := d.getWatcher(callbackSession)
+	if !ok {
+		return fmt.Errorf("callback session %s not found", callbackSession)
+	}
+
+	_, err := watcher.Send(message)
+	if err != nil {
+		return fmt.Errorf("send to callback session %s error: %w", callbackSession, err)
+	}
+
+	log.Printf("daemon: idle callback sent to session %s: %s", callbackSession, message)
+	return nil
+}
+
+// removeOneTimeHooks removes specified one-time hooks from the hook list
+func (d *Daemon) removeOneTimeHooks(hooksToRemove []IdleHook) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	var filteredHooks []IdleHook
+	for _, existing := range d.idleHooks {
+		shouldRemove := false
+		for _, toRemove := range hooksToRemove {
+			if d.hookEquals(existing, toRemove) {
+				shouldRemove = true
+				break
+			}
+		}
+		if !shouldRemove {
+			filteredHooks = append(filteredHooks, existing)
+		}
+	}
+
+	removed := len(d.idleHooks) - len(filteredHooks)
+	d.idleHooks = filteredHooks
+
+	if removed > 0 {
+		log.Printf("daemon: removed %d one-time hook(s)", removed)
+	}
+}
+
+// hookEquals compares two hooks for equality (used for removal)
+func (d *Daemon) hookEquals(a, b IdleHook) bool {
+	return a.Type == b.Type &&
+		a.SessionFilter == b.SessionFilter &&
+		a.CallbackSession == b.CallbackSession &&
+		a.Message == b.Message &&
+		a.TargetSession == b.TargetSession &&
+		a.URL == b.URL
+}
+
+// shouldRegisterCallback determines if a callback hook should be registered
+func (d *Daemon) shouldRegisterCallback(targetSession, callerSession string) bool {
+	log.Printf("daemon: shouldRegisterCallback target=%s caller=%s", targetSession, callerSession)
+
+	// Don't register callback if target and caller are the same
+	if targetSession == callerSession {
+		log.Printf("daemon: skipping callback - target and caller are the same")
+		return false
+	}
+
+	// Resolve caller session from lastUsed if it looks like a client ID
+	actualCaller := d.resolveCallerSession(callerSession)
+	if actualCaller == "" {
+		log.Printf("daemon: could not resolve caller session for %s", callerSession)
+		return false
+	}
+
+	// Check if target session exists
+	_, exists := d.getWatcher(targetSession)
+	if !exists {
+		log.Printf("daemon: target session %s not found", targetSession)
+		return false
+	}
+
+	log.Printf("daemon: callback conditions met - target=%s caller=%s", targetSession, actualCaller)
+	return true
+}
+
+// resolveCallerSession resolves caller ID to session name using active session heuristics
+func (d *Daemon) resolveCallerSession(caller string) string {
+	if caller == "" {
+		return ""
+	}
+
+	// Check if caller is already a session name
+	if _, exists := d.getWatcher(caller); exists {
+		return caller
+	}
+
+	// Find the most recently active session (heuristic approach)
+	// This is more reliable than lastUsed mapping for callback scenarios
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	var bestSession string
+	var mostRecentActivity time.Time
+
+	for sessionName, watcher := range d.watchers {
+		if watcher.Status() == "active" {
+			log.Printf("daemon: found active session for callback: %s", sessionName)
+			return sessionName
+		}
+	}
+
+	// If no active session, find the one with most recent activity
+	for sessionName, watcher := range d.watchers {
+		profile := watcher.Profile()
+		if !profile.LastPollOK.IsZero() && profile.LastPollOK.After(mostRecentActivity) {
+			mostRecentActivity = profile.LastPollOK
+			bestSession = sessionName
+		}
+	}
+
+	if bestSession != "" {
+		log.Printf("daemon: resolved caller %s to recent session: %s", caller, bestSession)
+		return bestSession
+	}
+
+	log.Printf("daemon: could not resolve caller %s to any session", caller)
+	return ""
+}
+
+// registerCallbackHook registers a one-time callback hook for idle notification
+func (d *Daemon) registerCallbackHook(targetSession, callerSession string) {
+	actualCaller := d.resolveCallerSession(callerSession)
+	if actualCaller == "" {
+		log.Printf("daemon: cannot register callback - caller resolution failed")
+		return
+	}
+
+	hook := IdleHook{
+		Type:            "callback",
+		SessionFilter:   targetSession,
+		CallbackSession: actualCaller,
+		OneTime:         true,
+		Message:         "", // will use default message
+	}
+
+	d.AddIdleHook(hook)
+	log.Printf("daemon: auto-registered callback hook %s -> %s", targetSession, actualCaller)
 }
