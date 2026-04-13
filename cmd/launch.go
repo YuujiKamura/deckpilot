@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/YuujiKamura/deckpilot/daemon"
@@ -66,11 +67,21 @@ func Launch(args []string) {
 	// and type the command into the shell.
 	cmd := exec.Command(ghosttyExe)
 	cmd.Dir = cwd
+	cmd.Stdin = nil
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP | 0x00000008, // DETACHED_PROCESS = 0x00000008
+	}
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "launch ghostty: %v\n", err)
 		os.Exit(1)
 	}
-	go func() { _ = cmd.Wait() }()
+	// Once started, completely detach. Do not Wait(), do not keep handles.
+	// The daemon will pick up the session via file scanning.
+	if cmd.Process != nil {
+		cmd.Process.Release()
+	}
 	fmt.Fprintf(os.Stderr, "launched: %s\n", ghosttyExe)
 
 	// Wait for new session to appear
