@@ -9,8 +9,8 @@ func TestAgentToAgentCommunication(t *testing.T) {
 	d := New()
 	
 	// Setup two mock agents
-	agentA := NewWatcher("agent-a", "pipe-a", "file-a", 101, nil)
-	agentB := NewWatcher("agent-b", "pipe-b", "file-b", 102, nil)
+	agentA := NewWatcher("agent-a", "pipe-a", "file-a", 101, "", nil)
+	agentB := NewWatcher("agent-b", "pipe-b", "file-b", 102, "", nil)
 	
 	// Initially they are idle (default active, so we set them)
 	agentA.mu.Lock()
@@ -70,7 +70,7 @@ func TestAgentToAgentCommunication(t *testing.T) {
 		select {
 		case req := <-agentA.reqCh:
 			t.Logf("AGENT-TO-AGENT: Agent A received: %s", req.payload)
-			expected := "[NOTIFY] agent-b is idle"
+			expected := "[NOTIFY] agent-b is idle\n"
 			if req.payload != expected {
 				t.Errorf("expected %q, got %q", expected, req.payload)
 			}
@@ -82,7 +82,7 @@ func TestAgentToAgentCommunication(t *testing.T) {
 	}()
 	
 	// This normally happens in addSession's notify callback
-	d.executeIdleHooks(notification)
+	d.executeStatusHooks(notification)
 	
 	<-done
 	

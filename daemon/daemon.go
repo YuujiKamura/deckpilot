@@ -599,6 +599,16 @@ func (d *Daemon) shouldRegisterCallback(targetSession, callerSession string) boo
 		return false
 	}
 
+	// Reject heuristic self-loop (issue #19): when the raw caller cannot be
+	// matched to a watcher, resolveCallerSession falls back to "most recently
+	// active watcher" — which is the target itself right after a send. Without
+	// this guard we'd auto-register callback_session == target and notify the
+	// target's own pipe.
+	if actualCaller == targetSession {
+		log.Printf("daemon: skipping callback - resolved caller aliases to target %s (heuristic self-loop)", targetSession)
+		return false
+	}
+
 	// Check if target session exists
 	_, exists := d.getWatcher(targetSession)
 	if !exists {
