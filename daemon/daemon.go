@@ -18,18 +18,8 @@ import (
 	"github.com/YuujiKamura/deckpilot/pipe"
 )
 
-// IdleHook defines an action to execute when a session becomes idle
-type IdleHook struct {
-	Type            string            `json:"type"`            // "http", "stdout", "send", "callback"
-	URL             string            `json:"url"`             // for "http" type
-	Method          string            `json:"method"`          // for "http" type (default: POST)
-	Headers         map[string]string `json:"headers"`         // for "http" type
-	Message         string            `json:"message"`         // for "stdout" and "send" types
-	TargetSession   string            `json:"target_session"`   // for "send" type
-	SessionFilter   string            `json:"session_filter"`   // optional: only trigger for specific sessions
-	CallbackSession string            `json:"callback_session"` // for "callback" type - session to notify
-	OneTime         bool              `json:"one_time"`         // if true, remove hook after execution
-}
+// Domain / value types (IdleHook, sessionInfo, BufferNotification) live in
+// daemon/types.go. This file keeps daemon lifecycle + orchestration.
 
 // IPCPipePath returns the named pipe path for the daemon.
 func IPCPipePath() string {
@@ -193,16 +183,6 @@ func (d *Daemon) getWatcher(name string) (*Watcher, bool) {
 	defer d.mu.Unlock()
 	w, ok := d.watchers[name]
 	return w, ok
-}
-
-type sessionInfo struct {
-	Name       string `json:"name"`
-	PID        int    `json:"pid"`
-	PipePath   string `json:"pipe_path"`
-	WsURL      string `json:"ws_url,omitempty"`
-	AppRuntime string `json:"app_runtime"`
-	Status     string `json:"status"`
-	Uptime     string `json:"uptime"`
 }
 
 // listSessions returns a snapshot of all session info.
