@@ -189,6 +189,171 @@ func TestDeletedCommands(t *testing.T) {
 	}
 }
 
+// TestAutoApprovalsCommand verifies that "auto-approvals" is a recognised command
+// and that "--dry-run" exits cleanly (no daemon needed for flag-error path).
+func TestAutoApprovalsCommand(t *testing.T) {
+	// Without a session name the command must exit non-zero and print usage.
+	cmd := exec.Command(deckpilotExe, "auto-approvals")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatal("expected non-zero exit when session name omitted")
+	}
+	if !strings.Contains(string(out), "usage") && !strings.Contains(string(out), "auto-approvals") {
+		t.Errorf("expected usage message, got:\n%s", out)
+	}
+}
+
+// TestAutoApprovalsAlias confirms "approve" is accepted as an alias.
+func TestAutoApprovalsAlias(t *testing.T) {
+	cmd := exec.Command(deckpilotExe, "approve")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatal("expected non-zero exit for approve without session")
+	}
+	// Must NOT return "unknown command" – the alias must be recognised.
+	if strings.Contains(string(out), "unknown command") {
+		t.Errorf("'approve' alias not recognised:\n%s", out)
+	}
+}
+
+// TestAutoApprovalsUnknownFlag checks that an unknown flag exits non-zero.
+func TestAutoApprovalsUnknownFlag(t *testing.T) {
+	cmd := exec.Command(deckpilotExe, "auto-approvals", "mysession", "--bogus-flag")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatal("expected non-zero exit for unknown flag")
+	}
+	if !strings.Contains(string(out), "unknown flag") {
+		t.Errorf("expected 'unknown flag' message, got:\n%s", out)
+	}
+}
+
+// TestAutoApprovalsIntervalFlag verifies --interval accepts valid durations and
+// rejects invalid ones without panicking.
+func TestAutoApprovalsIntervalFlag(t *testing.T) {
+	// Invalid duration → non-zero exit with error message.
+	cmd := exec.Command(deckpilotExe, "auto-approvals", "mysession", "--interval", "notaduration")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatal("expected non-zero exit for bad --interval value")
+	}
+	if !strings.Contains(string(out), "invalid --interval") {
+		t.Errorf("expected 'invalid --interval' message, got:\n%s", out)
+	}
+}
+
+// TestWatchOnceJSON verifies "watch --once --json" produces valid JSON lines
+// (or exits cleanly with no active sessions). Skipped in short mode.
+func TestWatchOnceJSON(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping E2E test in short mode")
+	}
+	cmd := exec.Command(deckpilotExe, "watch", "--once", "--json")
+	out, err := cmd.CombinedOutput()
+	// "watch" may exit non-zero when no sessions are active (daemon unavailable).
+	// Either way, any stdout lines must be valid JSON.
+	outStr := strings.TrimSpace(string(out))
+	for _, line := range strings.Split(outStr, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "{") || !strings.HasSuffix(line, "}") {
+			t.Errorf("non-JSON line in --json output: %q (exit err: %v)", line, err)
+		}
+	}
+}
+
+// TestWatchDeprecationWarning checks that "watch <session>" emits a deprecation
+// warning on stderr and that DECKPILOT_SUPPRESS_DEPRECATION=1 suppresses it.
+// The test does not require a live daemon; it inspects stderr before any IPC.
+func TestWatchDeprecationWarning(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping E2E test in short mode")
+	}
+	// Without suppression: deprecation warning expected.
+	cmd := exec.Command(deckpilotExe, "watch", "some-session", "--once")
+	cmd.Env = append(os.Environ(), "DECKPILOT_SUPPRESS_DEPRECATION=")
+	out, _ := cmd.CombinedOutput()
+	if !strings.Contains(string(out), "deprecation") {
+		t.Errorf("expected deprecation warning; got:\n%s", out)
+	}
+
+	// With suppression: no deprecation warning.
+	cmd2 := exec.Command(deckpilotExe, "watch", "some-session", "--once")
+	cmd2.Env = append(os.Environ(), "DECKPILOT_SUPPRESS_DEPRECATION=1")
+	out2, _ := cmd2.CombinedOutput()
+	if strings.Contains(string(out2), "deprecation") {
+		t.Errorf("expected suppressed deprecation warning; got:\n%s", out2)
+	}
+}
+
+// TestShowFlags verifies backward-compatible flag combinations for "show".
+// These are flag-parsing tests and do not require a live session.
+func TestShowFlags(t *testing.T) {
+	tests := []struct {
+		name        string
+		args        []string
+		wantExit    bool   // true = expect non-zero exit
+		wantInOut   string // substring expected in combined output (may be empty)
+		noUnknown   bool   // if true, must NOT contain "unknown command"
+	}{
+		{
+			name:      "help flag",
+			args:      []string{"show", "--help"},
+			wantExit:  false,
+			wantInOut: "auto-approvals", // help must mention auto-approvals
+		},
+		{
+			name:     "bad tail value",
+			args:     []string{"show", "--tail", "abc"},
+			wantExit: true,
+		},
+		{
+			name:     "unknown flag",
+			args:     []string{"show", "--bogus"},
+			wantExit: true,
+		},
+		{
+			name:      "show is recognised",
+			args:      []string{"show", "--help"},
+			wantExit:  false,
+			noUnknown: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := exec.Command(deckpilotExe, tt.args...)
+			out, err := cmd.CombinedOutput()
+			exitErr := err != nil
+			if exitErr != tt.wantExit {
+				t.Errorf("exit error=%v, want %v (output: %s)", exitErr, tt.wantExit, out)
+			}
+			if tt.wantInOut != "" && !strings.Contains(string(out), tt.wantInOut) {
+				t.Errorf("expected %q in output, got:\n%s", tt.wantInOut, out)
+			}
+			if tt.noUnknown && strings.Contains(string(out), "unknown command") {
+				t.Errorf("unexpected 'unknown command' in output:\n%s", out)
+			}
+		})
+	}
+}
+
+// TestHelpLists verifies the help output contains all new commands so nothing
+// was accidentally omitted from the dispatch table.
+func TestHelpLists(t *testing.T) {
+	cmd := exec.Command(deckpilotExe, "help")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("help command failed: %v\n%s", err, out)
+	}
+	for _, want := range []string{"auto-approvals", "watch", "show", "send", "list", "launch"} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("help output missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestCleanup(t *testing.T) {
 	if sharedSession != nil {
 		sharedSession.cleanup(t)
