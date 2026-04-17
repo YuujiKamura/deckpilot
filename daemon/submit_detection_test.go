@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 )
@@ -11,16 +10,13 @@ import (
 
 func TestExtractInputLine_LastPromptLine(t *testing.T) {
 	buf := "some output\n> first\nmore output\n> last line here"
-	got := ExtractInputLine(buf)
-	if got != "> last line here" {
+	if got := ExtractInputLine(buf); got != "> last line here" {
 		t.Errorf("expected '> last line here', got %q", got)
 	}
 }
 
 func TestExtractInputLine_NoPrompt(t *testing.T) {
-	buf := "just some output\nno prompt here"
-	got := ExtractInputLine(buf)
-	if got != "" {
+	if got := ExtractInputLine("just some output\nno prompt here"); got != "" {
 		t.Errorf("expected empty string, got %q", got)
 	}
 }
@@ -31,52 +27,31 @@ func TestExtractInputLine_EmptyBuf(t *testing.T) {
 	}
 }
 
-func TestExtractInputLine_BarePrompt(t *testing.T) {
-	buf := "output\n>"
-	if got := ExtractInputLine(buf); got != ">" {
-		t.Errorf("expected '>', got %q", got)
-	}
-}
-
-func TestExtractInputLine_PromptWithSpace(t *testing.T) {
-	// Trailing whitespace is stripped by ExtractInputLine; "> " becomes ">".
-	buf := "output\n> "
-	if got := ExtractInputLine(buf); got != ">" {
-		t.Errorf("expected '>' (trailing space trimmed), got %q", got)
-	}
-}
-
-func TestExtractInputLine_MultiplePrompts(t *testing.T) {
-	buf := "> first input\nresponse line\n> second input\nanother response\n> third input"
-	if got := ExtractInputLine(buf); got != "> third input" {
-		t.Errorf("expected '> third input', got %q", got)
-	}
-}
-
 func TestExtractInputLine_ClaudePrompt(t *testing.T) {
-	// Claude Code uses "❯" not ">". Must match.
-	buf := "output\n❯ some typed text"
-	if got := ExtractInputLine(buf); got != "❯ some typed text" {
+	if got := ExtractInputLine("output\n❯ some typed text"); got != "❯ some typed text" {
 		t.Errorf("expected claude prompt matched, got %q", got)
 	}
 }
 
-func TestExtractInputLine_ShellPrompts(t *testing.T) {
-	// bash/zsh/fish style
-	for _, pc := range []string{"$", "%", "#"} {
-		buf := "out\n" + pc + " command"
-		want := pc + " command"
-		if got := ExtractInputLine(buf); got != want {
-			t.Errorf("prompt %q: expected %q, got %q", pc, want, got)
-		}
+// --- BufHash tests ---
+
+func TestBufHash_StableForIdenticalInput(t *testing.T) {
+	a := BufHash("hello world\n> ")
+	b := BufHash("hello world\n> ")
+	if a != b {
+		t.Errorf("same input must hash equal; got %q vs %q", a, b)
+	}
+}
+
+func TestBufHash_DifferentForSingleByteDiff(t *testing.T) {
+	a := BufHash("hello world\n> ")
+	b := BufHash("hello world\n❯ ")
+	if a == b {
+		t.Errorf("single-glyph change must hash differently; both %q", a)
 	}
 }
 
 // --- ConfirmSubmit tests ---
-
-func fixedTailFn(buf string) func() (string, error) {
-	return func() (string, error) { return buf, nil }
-}
 
 func stepTailFn(steps []string) func() (string, error) {
 	count := 0
@@ -90,222 +65,194 @@ func stepTailFn(steps []string) func() (string, error) {
 	}
 }
 
-func TestConfirmSubmit_OKThinking(t *testing.T) {
-	buf := "previous output\nGesticulating...\n> "
-	result := ConfirmSubmit(
-		fixedTailFn(buf),
-		"Gesticulating", "",
-		"hello",
-		200*time.Millisecond, 10*time.Millisecond,
-	)
-	if result.Status != SubmitOKThinking {
-		t.Errorf("expected SubmitOKThinking, got %q (evidence: %s)", result.Status, result.Evidence)
-	}
-	if result.Evidence == "" {
-		t.Error("evidence should not be empty for OKThinking")
-	}
+// countingTailFn always returns buf; reports how many times it was called.
+func countingTailFn(buf string) (func() (string, error), *int) {
+	calls := 0
+	return func() (string, error) {
+		calls++
+		return buf, nil
+	}, &calls
 }
 
-func TestConfirmSubmit_FailedError(t *testing.T) {
-	buf := "some output\nAPI Error: rate limit\n> "
-	result := ConfirmSubmit(
-		fixedTailFn(buf),
-		"Gesticulating", "API Error",
-		"my query",
-		200*time.Millisecond, 10*time.Millisecond,
-	)
-	if result.Status != SubmitFailedError {
-		t.Errorf("expected SubmitFailedError, got %q", result.Status)
-	}
-}
+// First sample already differs from pre-Enter hash → OKCleared on first call.
+// This is the common success path: by the time we poll, the TUI has already
+// cleared the prompt and started rendering.
+func TestConfirmSubmit_OKCleared_FirstSampleDiffers(t *testing.T) {
+	preEnter := BufHash("text in prompt\n❯ sent text")
+	postEnter := "response line\n❯ " // different buffer
+	tailFn, calls := countingTailFn(postEnter)
 
-func TestConfirmSubmit_OKCleared_TextMovedOut(t *testing.T) {
-	// Text appears in buffer but NOT in last 6 lines (input area).
-	// Many blank lines push the history up so the text is outside the tail window.
-	text := "atomic番号42"
-	history := "history: " + text + "\nline2\nline3\nline4\nline5\nline6\nline7\n> "
-	result := ConfirmSubmit(
-		fixedTailFn(history),
-		"", "",
-		text,
-		200*time.Millisecond, 10*time.Millisecond,
-	)
+	result := ConfirmSubmit(tailFn, preEnter, 500*time.Millisecond, 20*time.Millisecond)
+
 	if result.Status != SubmitOKCleared {
-		t.Errorf("expected SubmitOKCleared, got %q (evidence: %s)", result.Status, result.Evidence)
+		t.Fatalf("expected SubmitOKCleared, got %q", result.Status)
+	}
+	if *calls != 1 {
+		t.Errorf("OKCleared should fire on first divergent sample; got %d calls", *calls)
 	}
 }
 
-func TestConfirmSubmit_NotCleared_TextStillInInputArea(t *testing.T) {
-	// Text still in the last line (unsubmitted).
-	text := "still typing"
-	buf := "history\n❯ " + text
-	result := ConfirmSubmit(
-		fixedTailFn(buf),
-		"", "",
-		text,
-		100*time.Millisecond, 20*time.Millisecond,
-	)
-	if result.Status != SubmitUnconfirmed {
-		t.Errorf("expected SubmitUnconfirmed (text still in input area), got %q", result.Status)
+// Buffer identical to preEnterHash on every poll → after 3 matching samples
+// we declare FailedStuck. Minimum 3-sample rule.
+func TestConfirmSubmit_FailedStuck_RequiresExactlyThreeSamples(t *testing.T) {
+	buf := "history\n❯ stuck text"
+	preEnter := BufHash(buf)
+	tailFn, calls := countingTailFn(buf)
+
+	result := ConfirmSubmit(tailFn, preEnter, 500*time.Millisecond, 5*time.Millisecond)
+
+	if result.Status != SubmitFailedStuck {
+		t.Fatalf("expected SubmitFailedStuck, got %q", result.Status)
+	}
+	if *calls != 3 {
+		t.Errorf("expected exactly 3 tailFn calls for stuck detection, got %d", *calls)
 	}
 }
 
-func TestConfirmSubmit_Unconfirmed_NoSignal(t *testing.T) {
-	buf := "some output\n❯ still typing"
-	result := ConfirmSubmit(
-		fixedTailFn(buf),
-		"Gesticulating", "API Error",
-		"still typing",
-		100*time.Millisecond, 20*time.Millisecond,
-	)
-	if result.Status != SubmitUnconfirmed {
-		t.Errorf("expected SubmitUnconfirmed, got %q", result.Status)
-	}
-	if result.ElapsedMs < 90 {
-		t.Errorf("expected elapsed ~100ms, got %dms", result.ElapsedMs)
-	}
-}
-
-func TestConfirmSubmit_ErrorBeatsThinking(t *testing.T) {
-	buf := "Gesticulating...\nAPI Error: something\n> "
-	result := ConfirmSubmit(
-		fixedTailFn(buf),
-		"Gesticulating", "API Error",
-		"query",
-		200*time.Millisecond, 10*time.Millisecond,
-	)
-	if result.Status != SubmitFailedError {
-		t.Errorf("expected SubmitFailedError, got %q", result.Status)
-	}
-}
-
-func TestConfirmSubmit_StepTransition_TextMovesOut(t *testing.T) {
-	// Initially text is in last line (not submitted).
-	// Then after a delay it moves into history and input becomes empty.
-	text := "hello world"
-	padding := strings.Repeat("line\n", 6)
+// 2 samples at preEnterHash then a 3rd that differs → OKCleared.
+// Even after 2 matching samples, a subsequent change wins.
+func TestConfirmSubmit_OKCleared_ChangeOnThirdSample(t *testing.T) {
+	stuckBuf := "history\n❯ typed text"
+	preEnter := BufHash(stuckBuf)
 	steps := []string{
-		"output\n❯ " + text,                   // typing, not submitted
-		"output\n❯ " + text,                   // still typing
-		"history: " + text + "\n" + padding + "❯ ", // submitted, text scrolled up
+		stuckBuf,
+		stuckBuf,
+		"response line\n❯ ", // finally moved
 	}
-	result := ConfirmSubmit(
-		stepTailFn(steps),
-		"", "",
-		text,
-		500*time.Millisecond, 10*time.Millisecond,
-	)
+	tailFn := stepTailFn(steps)
+
+	result := ConfirmSubmit(tailFn, preEnter, 500*time.Millisecond, 5*time.Millisecond)
+
 	if result.Status != SubmitOKCleared {
-		t.Errorf("expected SubmitOKCleared after transition, got %q (evidence: %s)", result.Status, result.Evidence)
+		t.Fatalf("expected SubmitOKCleared on 3rd-sample change, got %q", result.Status)
 	}
 }
 
+// Only 2 matching samples fit in the window → must return Unconfirmed
+// (cannot reach 3-sample threshold, cannot prove stuck).
+func TestConfirmSubmit_FailedStuck_TwoSamplesNotEnough(t *testing.T) {
+	buf := "history\n❯ stuck text"
+	preEnter := BufHash(buf)
+
+	calls := 0
+	tailFn := func() (string, error) {
+		calls++
+		if calls > 2 {
+			return "", fmt.Errorf("simulated third-read failure")
+		}
+		return buf, nil
+	}
+
+	result := ConfirmSubmit(tailFn, preEnter, 80*time.Millisecond, 10*time.Millisecond)
+
+	if result.Status == SubmitFailedStuck {
+		t.Fatalf("FailedStuck must NOT fire with only 2 valid samples (got %d calls, status %q)",
+			calls, result.Status)
+	}
+	if result.Status != SubmitUnconfirmed {
+		t.Fatalf("expected SubmitUnconfirmed, got %q", result.Status)
+	}
+}
+
+// Stuck detection is sample-count driven, not wall-time driven. Simulate
+// variable IPC jitter per tailFn call and verify the algorithm still decides
+// correctly after exactly 3 samples.
+func TestConfirmSubmit_FailedStuck_UnderIPCJitter(t *testing.T) {
+	buf := "history\n❯ stuck text"
+	preEnter := BufHash(buf)
+
+	calls := 0
+	jitter := []time.Duration{
+		30 * time.Millisecond,
+		250 * time.Millisecond,
+		80 * time.Millisecond,
+	}
+	tailFn := func() (string, error) {
+		d := jitter[calls%len(jitter)]
+		calls++
+		time.Sleep(d)
+		return buf, nil
+	}
+
+	result := ConfirmSubmit(tailFn, preEnter, 5*time.Second, 10*time.Millisecond)
+
+	if result.Status != SubmitFailedStuck {
+		t.Fatalf("expected SubmitFailedStuck under IPC jitter, got %q", result.Status)
+	}
+	if calls != 3 {
+		t.Errorf("sample-count invariant broken under jitter: expected 3 calls, got %d", calls)
+	}
+}
+
+// Tail latency >> pollInterval: stuck detection still fires in exactly
+// 3 samples. pollInterval does not need to be small relative to IPC cost.
+func TestConfirmSubmit_FailedStuck_PollIntervalSmallerThanTailLatency(t *testing.T) {
+	buf := "history\n❯ stuck text"
+	preEnter := BufHash(buf)
+
+	calls := 0
+	tailFn := func() (string, error) {
+		calls++
+		time.Sleep(150 * time.Millisecond)
+		return buf, nil
+	}
+
+	result := ConfirmSubmit(tailFn, preEnter, 2*time.Second, 10*time.Millisecond)
+
+	if result.Status != SubmitFailedStuck {
+		t.Fatalf("expected SubmitFailedStuck, got %q", result.Status)
+	}
+	if calls != 3 {
+		t.Errorf("expected exactly 3 calls, got %d", calls)
+	}
+}
+
+// Buffer changes on every poll and never matches preEnterHash → every sample
+// is divergent, so OKCleared fires on the FIRST sample.
+func TestConfirmSubmit_OKCleared_ContinuouslyChanging(t *testing.T) {
+	preEnter := BufHash("initial state")
+	calls := 0
+	tailFn := func() (string, error) {
+		calls++
+		return fmt.Sprintf("response chunk %d\n❯ ", calls), nil
+	}
+
+	result := ConfirmSubmit(tailFn, preEnter, 80*time.Millisecond, 10*time.Millisecond)
+
+	if result.Status != SubmitOKCleared {
+		t.Fatalf("expected SubmitOKCleared (buffer differs from preEnter), got %q", result.Status)
+	}
+	if calls != 1 {
+		t.Errorf("expected first-sample decision, got %d calls", calls)
+	}
+}
+
+// tailFn errors every time → no observation possible → Unconfirmed on timeout.
 func TestConfirmSubmit_TailFnError(t *testing.T) {
 	errorFn := func() (string, error) { return "", fmt.Errorf("pipe closed") }
-	result := ConfirmSubmit(
-		errorFn,
-		"Thinking", "Error",
-		"query",
-		80*time.Millisecond, 20*time.Millisecond,
-	)
+
+	result := ConfirmSubmit(errorFn, "anyhash", 80*time.Millisecond, 20*time.Millisecond)
+
 	if result.Status != SubmitUnconfirmed {
 		t.Errorf("expected SubmitUnconfirmed on tailFn error, got %q", result.Status)
 	}
 }
 
-func TestConfirmSubmit_EmptyPreSubmitText_NoClearedDetection(t *testing.T) {
-	// With empty preSubmitText we cannot use the cleared signal.
-	// Must fall through to Unconfirmed unless thinking/error fires.
-	buf := "some output\n> "
-	result := ConfirmSubmit(
-		fixedTailFn(buf),
-		"", "",
-		"", // empty preSubmitText
-		80*time.Millisecond, 10*time.Millisecond,
-	)
-	if result.Status != SubmitUnconfirmed {
-		t.Errorf("expected SubmitUnconfirmed with empty preSubmitText, got %q", result.Status)
-	}
-}
+// The Gemini @path transform scenario: the pre-Enter buffer shows the raw
+// "@C:/path/to/file.jpg" text in the prompt; after Enter, Gemini replaces
+// that with "[Image file.jpg]" in scrollback. A probe-based implementation
+// would fail to find the exact sent text and mis-report Unconfirmed. This
+// hash-based impl sees the buffers differ and returns OKCleared.
+func TestConfirmSubmit_OKCleared_GeminiAtPathTransform(t *testing.T) {
+	preEnterBuf := "> analyze: @C:/tmp/R0010850.JPG"
+	preEnter := BufHash(preEnterBuf)
+	// After Enter: Gemini transformed @path to [Image ...] and started response.
+	postEnterBuf := "> analyze: [Image R0010850.JPG]\n✦ {result...}\n> "
 
-func TestConfirmSubmit_EmptyPreSubmitText_ThinkingStillWorks(t *testing.T) {
-	// Even with empty preSubmitText, thinkingStr should fire OKThinking.
-	buf := "Gesticulating...\n> "
-	result := ConfirmSubmit(
-		fixedTailFn(buf),
-		"Gesticulating", "",
-		"",
-		80*time.Millisecond, 10*time.Millisecond,
-	)
-	if result.Status != SubmitOKThinking {
-		t.Errorf("expected SubmitOKThinking with empty preSubmitText, got %q", result.Status)
-	}
-}
+	tailFn, _ := countingTailFn(postEnterBuf)
+	result := ConfirmSubmit(tailFn, preEnter, 500*time.Millisecond, 20*time.Millisecond)
 
-func TestVisibilityProbe_StripsAllWhitespace(t *testing.T) {
-	msg := "  deckpilot watchを\n  実行して\tください \r\n"
-	got := visibilityProbe(msg)
-	want := "deckpilotwatchを実行してください"
-	if got != want {
-		t.Fatalf("expected whitespace-stripped probe %q, got %q", want, got)
-	}
-}
-
-func TestProbeVisibleInBuffer_WordWrapWhitespaceInsensitive(t *testing.T) {
-	probe := visibilityProbe("deckpilot watchを実行してください これは visibility probe 実機テストです")
-	buf := strings.Join([]string{
-		"C:\\Users\\yuuji>deckpilot watchを実行してください これは visibility prob",
-		"e 実機テストです",
-	}, "\n")
-	if !probeVisibleInBuffer(buf, probe) {
-		t.Fatalf("expected probe to be visible across wrapped buffer content")
-	}
-}
-
-func TestConfirmSubmit_OKCleared_WordWrapWhitespaceInsensitive(t *testing.T) {
-	text := "deckpilot watchを実行してください"
-	// Simulate the submitted text wrapping across lines in scrollback while the
-	// input area no longer contains it.
-	buf := strings.Join([]string{
-		"history: deckpilot watchを",
-		"実行して ください",
-		"line3",
-		"line4",
-		"line5",
-		"line6",
-		"line7",
-		"❯ ",
-	}, "\n")
-
-	result := ConfirmSubmit(
-		fixedTailFn(buf),
-		"", "",
-		text,
-		200*time.Millisecond, 10*time.Millisecond,
-	)
 	if result.Status != SubmitOKCleared {
-		t.Fatalf("expected SubmitOKCleared for wrapped text, got %q (evidence: %s)", result.Status, result.Evidence)
-	}
-}
-
-func TestConfirmSubmit_Unconfirmed_ShortTokenOnlyInHistory(t *testing.T) {
-	text := "deckpilot watchを実行してください"
-	// "deckpilot" exists in history, but the full whitespace-stripped message does
-	// not. Old short-token probing would have produced a false ok_cleared here.
-	buf := strings.Join([]string{
-		"git log: fix deckpilot watch race",
-		"cd deckpilot",
-		"other output",
-		"❯ ",
-	}, "\n")
-
-	result := ConfirmSubmit(
-		fixedTailFn(buf),
-		"", "",
-		text,
-		80*time.Millisecond, 10*time.Millisecond,
-	)
-	if result.Status != SubmitUnconfirmed {
-		t.Fatalf("expected SubmitUnconfirmed when only short history tokens match, got %q (evidence: %s)", result.Status, result.Evidence)
+		t.Fatalf("expected SubmitOKCleared despite @path→[Image] transform, got %q", result.Status)
 	}
 }
