@@ -12,6 +12,18 @@ import (
 	"github.com/YuujiKamura/deckpilot/daemon"
 )
 
+// formatShowHeader returns the bracketed header line emitted as the first line of show output.
+func formatShowHeader(name string, now time.Time, uptime, lastAct string) string {
+	ts := now.Format("2006-01-02 Mon 15:04 MST")
+	if uptime == "" && lastAct == "" {
+		return fmt.Sprintf("[%s | now %s]", name, ts)
+	}
+	if lastAct == "" {
+		return fmt.Sprintf("[%s | now %s | uptime %s]", name, ts, uptime)
+	}
+	return fmt.Sprintf("[%s | now %s | uptime %s | last-act %s]", name, ts, uptime, lastAct)
+}
+
 // Show retrieves an individual session's buffer or history.
 // It intentionally does NOT send any input or perform auto-approval.
 // For auto-approval use: deckpilot auto-approvals <session>
@@ -83,12 +95,13 @@ func Show(args []string) {
 		return
 	}
 
-	content, status, err := daemon.DaemonShow(name, mode, caller)
+	content, status, uptime, lastAct, err := daemon.DaemonShow(name, mode, caller)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "show: %v\n", err)
 		os.Exit(1)
 	}
 
+	fmt.Println(formatShowHeader(name, time.Now().In(cmdJST), uptime, lastAct))
 	fmt.Fprintf(os.Stderr, "[%s]\n", status)
 	fmt.Print(content)
 }
@@ -99,7 +112,7 @@ func Show(args []string) {
 func runShowFollow(name, mode, caller string) {
 	var last string
 	for {
-		content, status, err := daemon.DaemonShow(name, mode, caller)
+		content, status, _, _, err := daemon.DaemonShow(name, mode, caller)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "show: %v\n", err)
 			os.Exit(1)
