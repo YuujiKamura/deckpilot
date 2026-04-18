@@ -203,7 +203,7 @@ func waitForReady(session string, agent AgentDef, timeout time.Duration) error {
 	for time.Now().Before(deadline) {
 		time.Sleep(1 * time.Second)
 
-		output, _, err := daemon.DaemonShow(session, "buffer", caller)
+		output, _, _, _, err := daemon.DaemonShow(session, "buffer", caller)
 		if err != nil {
 			continue
 		}

@@ -31,29 +31,30 @@ type pipeResult struct {
 // Watcher monitors a single Ghostty session. All pipe I/O for this session
 // goes through the watcher's single goroutine to avoid contention.
 type Watcher struct {
-	mu          sync.Mutex
-	name        string
-	pid         int
-	hwnd        syscall.Handle
-	pipePath    string
-	sessionFile string
-	lastHash    string
-	stableCount int
-	status      string
-	lastStatus  string // previous status for transition detection
-	lastContent string
-	lastError   string
-	deadAt      time.Time
-	deadRetries int
-	createdAt   time.Time
-	sendCount   int
-	showCount   int
-	pollSuccess int
-	pollFail    int
-	lastPollOK  time.Time
-	onNotify    func(BufferNotification)
-	reqCh       chan pipeRequest
-	pauseCh     chan chan struct{} // send pause signal, receive resume signal
+	mu            sync.Mutex
+	name          string
+	pid           int
+	hwnd          syscall.Handle
+	pipePath      string
+	sessionFile   string
+	lastHash      string
+	stableCount   int
+	status        string
+	lastStatus    string // previous status for transition detection
+	lastContent   string
+	lastError     string
+	deadAt        time.Time
+	deadRetries   int
+	createdAt     time.Time
+	sendCount     int
+	showCount     int
+	pollSuccess   int
+	pollFail      int
+	lastPollOK    time.Time
+	lastChangedAt time.Time // when the output buffer last changed content
+	onNotify      func(BufferNotification)
+	reqCh         chan pipeRequest
+	pauseCh       chan chan struct{} // send pause signal, receive resume signal
 }
 
 // NewWatcher creates a Watcher for the given session.
@@ -269,6 +270,7 @@ func (w *Watcher) updateContent(content string) {
 			w.lastHash = hash
 			w.stableCount = 0
 			w.status = "active"
+			w.lastChangedAt = time.Now()
 		} else {
 			w.stableCount++
 			if w.stableCount >= 3 {
@@ -386,15 +388,16 @@ func (w *Watcher) LastContent() string {
 
 // WatcherProfile holds session profiling counters.
 type WatcherProfile struct {
-	CreatedAt   time.Time
-	PID         int
-	SendCount   int
-	ShowCount   int
-	PollSuccess int
-	PollFail    int
-	LastPollOK  time.Time
-	DeadAt      time.Time
-	LastError   string
+	CreatedAt     time.Time
+	PID           int
+	SendCount     int
+	ShowCount     int
+	PollSuccess   int
+	PollFail      int
+	LastPollOK    time.Time
+	LastChangedAt time.Time // when the output buffer last changed
+	DeadAt        time.Time
+	LastError     string
 }
 
 // Profile returns a snapshot of this watcher's profiling counters.
@@ -402,15 +405,16 @@ func (w *Watcher) Profile() WatcherProfile {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return WatcherProfile{
-		CreatedAt:   w.createdAt,
-		PID:         w.pid,
-		SendCount:   w.sendCount,
-		ShowCount:   w.showCount,
-		PollSuccess: w.pollSuccess,
-		PollFail:    w.pollFail,
-		LastPollOK:  w.lastPollOK,
-		DeadAt:      w.deadAt,
-		LastError:   w.lastError,
+		CreatedAt:     w.createdAt,
+		PID:           w.pid,
+		SendCount:     w.sendCount,
+		ShowCount:     w.showCount,
+		PollSuccess:   w.pollSuccess,
+		PollFail:      w.pollFail,
+		LastPollOK:    w.lastPollOK,
+		LastChangedAt: w.lastChangedAt,
+		DeadAt:        w.deadAt,
+		LastError:     w.lastError,
 	}
 }
 

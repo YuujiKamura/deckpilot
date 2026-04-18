@@ -330,8 +330,11 @@ func (d *Daemon) handleShow(parts []string) string {
 
 	d.setLastUsed(caller, name)
 
+	p := w.Profile()
+	uptime := formatUptime(time.Since(p.CreatedAt))
+	lastAct := formatLastAct(p.LastChangedAt)
 	encoded := base64.StdEncoding.EncodeToString([]byte(content))
-	return fmt.Sprintf("OK|%s|%s\n", encoded, w.Status())
+	return fmt.Sprintf("OK|%s|%s|%s|%s\n", encoded, w.Status(), uptime, lastAct)
 }
 
 // sendViaWS sends a message to a ghostty-web session via WebSocket using the CP protocol.
@@ -419,26 +422,39 @@ func DaemonList() (string, error) {
 }
 
 // DaemonShow retrieves session content (buffer or history) with caller tracking.
-func DaemonShow(name, mode, caller string) (content string, status string, err error) {
+// Returns content, status, uptime, lastAct and error.
+func DaemonShow(name, mode, caller string) (content, status, uptime, lastAct string, err error) {
 	resp, err := dialDaemon(fmt.Sprintf("SHOW|%s|%s|%s", name, mode, caller))
 	if err != nil {
-		return "", "", err
+		return "", "", "", "", err
 	}
 	resp = strings.TrimSpace(resp)
 	if strings.HasPrefix(resp, "ERR|") {
-		return "", "", fmt.Errorf("%s", strings.TrimPrefix(resp, "ERR|"))
+		return "", "", "", "", fmt.Errorf("%s", strings.TrimPrefix(resp, "ERR|"))
 	}
-	// Response: OK|<base64content>|<status>
+	// Response: OK|<base64content>|<status>|<uptime>|<lastact>
 	body := strings.TrimPrefix(resp, "OK|")
-	parts := strings.SplitN(body, "|", 2)
+	parts := strings.SplitN(body, "|", 4)
 	if len(parts) < 2 {
-		return "", "", fmt.Errorf("unexpected response: %s", resp)
+		return "", "", "", "", fmt.Errorf("unexpected response: %s", resp)
 	}
-	decoded, err := base64.StdEncoding.DecodeString(parts[0])
-	if err != nil {
-		return "", "", fmt.Errorf("decode: %w", err)
+	decoded, decErr := base64.StdEncoding.DecodeString(parts[0])
+	if decErr != nil {
+		return "", "", "", "", fmt.Errorf("decode: %w", decErr)
 	}
-	return string(decoded), strings.TrimSpace(parts[1]), nil
+	st := ""
+	up := ""
+	la := ""
+	if len(parts) >= 2 {
+		st = strings.TrimSpace(parts[1])
+	}
+	if len(parts) >= 3 {
+		up = strings.TrimSpace(parts[2])
+	}
+	if len(parts) >= 4 {
+		la = strings.TrimSpace(parts[3])
+	}
+	return string(decoded), st, up, la, nil
 }
 
 // handleHook processes hook management commands

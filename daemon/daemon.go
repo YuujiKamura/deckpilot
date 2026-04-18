@@ -21,6 +21,9 @@ import (
 // Domain / value types (IdleHook, sessionInfo, BufferNotification) live in
 // daemon/types.go. This file keeps daemon lifecycle + orchestration.
 
+// JST is the fixed timezone for this project's operator. No TZDB dependency.
+var JST = time.FixedZone("JST", 9*3600)
+
 // IPCPipePath returns the named pipe path for the daemon.
 func IPCPipePath() string {
 	if suffix := os.Getenv("DECKPILOT_PIPE_SUFFIX"); suffix != "" {
@@ -190,16 +193,23 @@ func (d *Daemon) listSessions() []sessionInfo {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	const staleThreshold = 30 * time.Minute
+
 	var result []sessionInfo
 	for name, pipePath := range d.sessions {
 		status := "unknown"
 		uptime := ""
+		lastAct := ""
 		pid := 0
 		if w, ok := d.watchers[name]; ok {
 			status = w.Status()
 			p := w.Profile()
 			uptime = formatUptime(time.Since(p.CreatedAt))
 			pid = p.PID
+			lastAct = formatLastAct(p.LastChangedAt)
+			if status == "idle" && !p.LastChangedAt.IsZero() && time.Since(p.LastChangedAt) > staleThreshold {
+				status = "stale"
+			}
 		}
 		result = append(result, sessionInfo{
 			Name:       name,
@@ -209,9 +219,29 @@ func (d *Daemon) listSessions() []sessionInfo {
 			AppRuntime: d.appRuntimes[name],
 			Status:     status,
 			Uptime:     uptime,
+			LastAct:    lastAct,
 		})
 	}
 	return result
+}
+
+// formatLastAct converts time since last buffer change into a human-readable string.
+// < 1h: "Xm ago" or "Xs ago"; >= 1h: "XhYm" (no "ago" — long stall is self-evident).
+func formatLastAct(lastChangedAt time.Time) string {
+	if lastChangedAt.IsZero() {
+		return "unknown"
+	}
+	d := time.Since(lastChangedAt).Round(time.Second)
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	s := int(d.Seconds()) % 60
+	if h > 0 {
+		return fmt.Sprintf("%dh%02dm", h, m)
+	}
+	if m > 0 {
+		return fmt.Sprintf("%dm ago", m)
+	}
+	return fmt.Sprintf("%ds ago", s)
 }
 
 func formatUptime(d time.Duration) string {
