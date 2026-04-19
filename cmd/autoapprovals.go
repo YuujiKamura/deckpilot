@@ -165,6 +165,33 @@ func AutoApprovals(args []string) {
 						}
 						fmt.Fprintf(os.Stderr, "auto-approvals: send failed: %v\n", err)
 					}
+
+					// Phase 1 (issue #25): verify the Enter actually closed
+					// the modal. Poll the buffer for up to 3s — longer than
+					// the 600ms inter-tick interval used inside handleSend so
+					// we tolerate Gemini's 200-400ms repaint lag and Codex's
+					// inline-box redraw. A resolved prompt means healthy
+					// progress, so we reset both sentEnter and entersSent
+					// so the backoff ceiling is only approached by genuinely
+					// stuck prompts.
+					resolved := waitForApprovalResolved(
+						defaultVerifier,
+						sessionName, caller, agentType,
+						3*time.Second, 250*time.Millisecond,
+					)
+					if resolved {
+						if verbose {
+							fmt.Fprintf(os.Stderr, "[%s] approve resolved — modal closed\n",
+								time.Now().Format("15:04:05"))
+						}
+						sentEnter = false
+						entersSent = 0
+						continue
+					}
+					if verbose {
+						fmt.Fprintf(os.Stderr, "[%s] approve unresolved after 3s — counting toward backoff\n",
+							time.Now().Format("15:04:05"))
+					}
 				}
 				sentEnter = true
 				entersSent++
