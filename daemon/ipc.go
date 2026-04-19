@@ -52,6 +52,8 @@ func (d *Daemon) handleConn(conn net.Conn) {
 		resp = d.handleList()
 	case "SHOW":
 		resp = d.handleShow(parts)
+	case "TAG":
+		resp = d.handleTag(parts)
 	case "VERSION":
 		resp = handleVersion()
 	case "HOOK":
@@ -334,8 +336,28 @@ func (d *Daemon) handleShow(parts []string) string {
 	p := w.Profile()
 	uptime := formatUptime(time.Since(p.CreatedAt))
 	lastAct := formatLastAct(p.LastChangedAt)
+	model := d.models[name]
+	quota := d.quotas[name]
 	encoded := base64.StdEncoding.EncodeToString([]byte(content))
-	return fmt.Sprintf("OK|%s|%s|%s|%s\n", encoded, w.Status(), uptime, lastAct)
+	return fmt.Sprintf("OK|%s|%s|%s|%s|%s|%s\n", encoded, w.Status(), uptime, lastAct, model, quota)
+}
+
+func (d *Daemon) handleTag(parts []string) string {
+	if len(parts) < 3 {
+		return "ERR|usage: TAG|<name>|<json_payload>\n"
+	}
+	name := parts[1]
+	payload := parts[2]
+
+	var tags map[string]string
+	if err := json.Unmarshal([]byte(payload), &tags); err != nil {
+		return fmt.Sprintf("ERR|json decode: %v\n", err)
+	}
+
+	if err := d.TagSession(name, tags); err != nil {
+		return fmt.Sprintf("ERR|%v\n", err)
+	}
+	return "OK\n"
 }
 
 // sendViaWS sends a message to a ghostty-web session via WebSocket using the CP protocol.
@@ -423,29 +445,31 @@ func DaemonList() (string, error) {
 }
 
 // DaemonShow retrieves session content (buffer or history) with caller tracking.
-// Returns content, status, uptime, lastAct and error.
-func DaemonShow(name, mode, caller string) (content, status, uptime, lastAct string, err error) {
+// Returns content, status, uptime, lastAct, model, quota and error.
+func DaemonShow(name, mode, caller string) (content, status, uptime, lastAct, model, quota string, err error) {
 	resp, err := dialDaemon(fmt.Sprintf("SHOW|%s|%s|%s", name, mode, caller))
 	if err != nil {
-		return "", "", "", "", err
+		return "", "", "", "", "", "", err
 	}
 	resp = strings.TrimSpace(resp)
 	if strings.HasPrefix(resp, "ERR|") {
-		return "", "", "", "", fmt.Errorf("%s", strings.TrimPrefix(resp, "ERR|"))
+		return "", "", "", "", "", "", fmt.Errorf("%s", strings.TrimPrefix(resp, "ERR|"))
 	}
-	// Response: OK|<base64content>|<status>|<uptime>|<lastact>
+	// Response: OK|<base64content>|<status>|<uptime>|<lastact>|<model>|<quota>
 	body := strings.TrimPrefix(resp, "OK|")
-	parts := strings.SplitN(body, "|", 4)
+	parts := strings.SplitN(body, "|", 6)
 	if len(parts) < 2 {
-		return "", "", "", "", fmt.Errorf("unexpected response: %s", resp)
+		return "", "", "", "", "", "", fmt.Errorf("unexpected response: %s", resp)
 	}
 	decoded, decErr := base64.StdEncoding.DecodeString(parts[0])
 	if decErr != nil {
-		return "", "", "", "", fmt.Errorf("decode: %w", decErr)
+		return "", "", "", "", "", "", fmt.Errorf("decode: %w", decErr)
 	}
 	st := ""
 	up := ""
 	la := ""
+	mo := ""
+	qo := ""
 	if len(parts) >= 2 {
 		st = strings.TrimSpace(parts[1])
 	}
@@ -455,7 +479,13 @@ func DaemonShow(name, mode, caller string) (content, status, uptime, lastAct str
 	if len(parts) >= 4 {
 		la = strings.TrimSpace(parts[3])
 	}
-	return string(decoded), st, up, la, nil
+	if len(parts) >= 5 {
+		mo = strings.TrimSpace(parts[4])
+	}
+	if len(parts) >= 6 {
+		qo = strings.TrimSpace(parts[5])
+	}
+	return string(decoded), st, up, la, mo, qo, nil
 }
 
 // handleHook processes hook management commands
@@ -570,4 +600,21 @@ func DaemonShutdown() (string, error) {
 		return "", fmt.Errorf("dial daemon: %w", err)
 	}
 	return resp, nil
+}
+
+// DaemonTag updates metadata for a session via daemon IPC.
+func DaemonTag(name string, tags map[string]string) error {
+	data, err := json.Marshal(tags)
+	if err != nil {
+		return fmt.Errorf("json marshal: %w", err)
+	}
+
+	resp, err := dialDaemon(fmt.Sprintf("TAG|%s|%s", name, string(data)))
+	if err != nil {
+		return fmt.Errorf("dial daemon: %w", err)
+	}
+	if strings.HasPrefix(resp, "ERR|") {
+		return fmt.Errorf("%s", strings.TrimPrefix(resp, "ERR|"))
+	}
+	return nil
 }

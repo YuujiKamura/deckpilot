@@ -72,26 +72,39 @@ For auto-approval, use `deckpilot auto-approvals <session>`.
 - `--tail N`: Show last N lines (default: 50).
 - `--history`: Retrieve full scrollback instead of live buffer.
 - `--follow` / `-f`: Poll every 2 seconds and print updates. Display-only — no approval.
+- **Header**: Shows `uptime`, `last-act`, `model`, and `quota` (OMC scraper) when available.
 
 ### `list` / `ls` — List sessions
 
 ```bash
-deckpilot list
+deckpilot list [--json] [--usage]
 ```
 
 ```
-NAME        RUNTIME   STATUS
-claude-01   winui3    idle
-codex-02    wt        active
+NAME        PID    MODEL      RUNTIME   STATUS
+claude-01   1234   sonnet     winui3    idle
+codex-02    5678   codex      wt        active
 ```
+
+- `--usage`: Show summary row with max(5h) usage across Claude sessions and reset ETA.
+
+### `tag` — Manual metadata override
+
+```bash
+deckpilot tag <session> [--model name]
+```
+
+Manually assign a model name or other metadata to a session.
 
 ### `launch` — Start an agent
 
 ```bash
-deckpilot launch <agent> <prompt...> [--cwd DIR]
+deckpilot launch <agent> <prompt...> [--cwd DIR] [--model name]
 ```
 
 Starts a new Ghostty window, waits for the agent to be ready, then sends the prompt. Prints the session name to stdout for use in scripts.
+
+- `--model <name>`: Explicitly set the model name (prevents auto-detection).
 
 | Agent  | Command                                  | Ready string |
 |--------|------------------------------------------|--------------|

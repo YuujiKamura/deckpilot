@@ -13,15 +13,22 @@ import (
 )
 
 // formatShowHeader returns the bracketed header line emitted as the first line of show output.
-func formatShowHeader(name string, now time.Time, uptime, lastAct string) string {
+func formatShowHeader(name string, now time.Time, uptime, lastAct, model, quota string) string {
 	ts := now.Format("2006-01-02 Mon 15:04 MST")
-	if uptime == "" && lastAct == "" {
-		return fmt.Sprintf("[%s | now %s]", name, ts)
+	header := fmt.Sprintf("[%s | now %s]", name, ts)
+	if uptime != "" {
+		header = strings.TrimSuffix(header, "]") + fmt.Sprintf(" | uptime %s]", uptime)
 	}
-	if lastAct == "" {
-		return fmt.Sprintf("[%s | now %s | uptime %s]", name, ts, uptime)
+	if lastAct != "" {
+		header = strings.TrimSuffix(header, "]") + fmt.Sprintf(" | last-act %s]", lastAct)
 	}
-	return fmt.Sprintf("[%s | now %s | uptime %s | last-act %s]", name, ts, uptime, lastAct)
+	if model != "" {
+		header += fmt.Sprintf("\nmodel: %s", model)
+	}
+	if quota != "" {
+		header += fmt.Sprintf("\n%s", quota)
+	}
+	return header
 }
 
 // Show retrieves an individual session's buffer or history.
@@ -95,13 +102,13 @@ func Show(args []string) {
 		return
 	}
 
-	content, status, uptime, lastAct, err := daemon.DaemonShow(name, mode, caller)
+	content, status, uptime, lastAct, model, quota, err := daemon.DaemonShow(name, mode, caller)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "show: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Println(formatShowHeader(name, time.Now().In(cmdJST), uptime, lastAct))
+	fmt.Println(formatShowHeader(name, time.Now().In(cmdJST), uptime, lastAct, model, quota))
 	fmt.Fprintf(os.Stderr, "[%s]\n", status)
 	fmt.Print(content)
 }
@@ -112,13 +119,16 @@ func Show(args []string) {
 func runShowFollow(name, mode, caller string) {
 	var last string
 	for {
-		content, status, _, _, err := daemon.DaemonShow(name, mode, caller)
+		content, status, _, _, model, quota, err := daemon.DaemonShow(name, mode, caller)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "show: %v\n", err)
 			os.Exit(1)
 		}
 		if content != last {
 			fmt.Fprintf(os.Stderr, "[%s]\n", status)
+			if model != "" || quota != "" {
+				fmt.Fprintf(os.Stderr, "[model: %s | %s]\n", model, quota)
+			}
 			fmt.Print(content)
 			last = content
 		}

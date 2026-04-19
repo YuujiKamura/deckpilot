@@ -34,15 +34,20 @@ func Launch(args []string) {
 		os.Exit(1)
 	}
 
-	// Parse --cwd flag and collect prompt
+	// Parse --cwd and --model flags and collect prompt
 	cwd, _ := os.Getwd()
+	model := ""
 	var promptParts []string
 	for i := 1; i < len(args); i++ {
-		if args[i] == "--cwd" && i+1 < len(args) {
+		a := args[i]
+		if a == "--cwd" && i+1 < len(args) {
 			cwd = args[i+1]
 			i++
+		} else if a == "--model" && i+1 < len(args) {
+			model = args[i+1]
+			i++
 		} else {
-			promptParts = append(promptParts, args[i])
+			promptParts = append(promptParts, a)
 		}
 	}
 	prompt := strings.Join(promptParts, " ")
@@ -127,6 +132,11 @@ func Launch(args []string) {
 
 	// Print session name to stdout for scripting
 	fmt.Println(sessionName)
+
+	// If model was specified, tag it
+	if model != "" {
+		daemon.DaemonTag(sessionName, map[string]string{"model": model})
+	}
 }
 
 func findGhostty() string {
@@ -203,7 +213,7 @@ func waitForReady(session string, agent AgentDef, timeout time.Duration) error {
 	for time.Now().Before(deadline) {
 		time.Sleep(1 * time.Second)
 
-		output, _, _, _, err := daemon.DaemonShow(session, "buffer", caller)
+		output, _, _, _, _, _, err := daemon.DaemonShow(session, "buffer", caller)
 		if err != nil {
 			continue
 		}

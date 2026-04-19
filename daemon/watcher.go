@@ -5,12 +5,26 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"log"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/YuujiKamura/deckpilot/pipe"
+)
+
+var (
+	// Quota regex: 5h:86%(resets 1pm) wk:41%(resets Mon) sn:9%(resets May 1)
+	quotaRegex = regexp.MustCompile(`5h:(\d+)%\(([^)]+)\)\s+wk:(\d+)%\(([^)]+)\)\s+sn:(\d+)%\(([^)]+)\)`)
+
+	// Model regexes
+	haikuRegex  = regexp.MustCompile(`Haiku 4\.5 with high effort`)
+	sonnetRegex = regexp.MustCompile(`Sonnet 4\.6`)
+	opusRegex   = regexp.MustCompile(`Opus 4\.7`)
+	geminiRegex = regexp.MustCompile(`Gemini 2\.0 Flash`) // assuming a banner
+	codexRegex  = regexp.MustCompile(`OpenAI Codex`)     // assuming a banner
 )
 
 // BufferNotification moved to daemon/types.go.
@@ -53,12 +67,15 @@ type Watcher struct {
 	lastPollOK    time.Time
 	lastChangedAt time.Time // when the output buffer last changed content
 	onNotify      func(BufferNotification)
+	onReport      func(string, map[string]string) // session name, tags
+	last5h        int                             // last seen 5h quota %
+	model         string                          // auto-detected model
 	reqCh         chan pipeRequest
 	pauseCh       chan chan struct{} // send pause signal, receive resume signal
 }
 
 // NewWatcher creates a Watcher for the given session.
-func NewWatcher(name, pipePath, sessionFile string, pid int, hwndStr string, onNotify func(BufferNotification)) *Watcher {
+func NewWatcher(name, pipePath, sessionFile string, pid int, hwndStr string, onNotify func(BufferNotification), onReport func(string, map[string]string)) *Watcher {
 	return &Watcher{
 		name:        name,
 		pid:         pid,
@@ -69,6 +86,7 @@ func NewWatcher(name, pipePath, sessionFile string, pid int, hwndStr string, onN
 		lastStatus:  "unknown", // initial state for transition detection
 		createdAt:   time.Now(),
 		onNotify:    onNotify,
+		onReport:    onReport,
 		reqCh:       make(chan pipeRequest, 16),
 		pauseCh:     make(chan chan struct{}),
 	}
@@ -264,6 +282,11 @@ func (w *Watcher) updateContent(content string) {
 	changed := hash != w.lastHash
 	prevStatus := w.lastStatus
 
+	// Auto-detection and scraping
+	if changed && content != "" {
+		w.scrapeMetadata(content)
+	}
+
 	// Only update status if not already marked as stalled by poll()
 	if w.status != "stalled" {
 		if changed {
@@ -431,4 +454,62 @@ func (w *Watcher) logProfile() {
 	}
 	log.Printf("profile[%s]: uptime=%s send=%d show=%d poll_ok=%d poll_fail=%d lastPollOK=%s%s",
 		w.name, uptime, p.SendCount, p.ShowCount, p.PollSuccess, p.PollFail, lastOK, deadInfo)
+}
+
+func (w *Watcher) scrapeMetadata(content string) {
+	// 1. Model detection (priority: Haiku > Sonnet > Opus > Gemini > Codex)
+	detectedModel := ""
+	if haikuRegex.MatchString(content) {
+		detectedModel = "haiku"
+	} else if sonnetRegex.MatchString(content) {
+		detectedModel = "sonnet"
+	} else if opusRegex.MatchString(content) {
+		detectedModel = "opus"
+	} else if geminiRegex.MatchString(content) {
+		detectedModel = "gemini"
+	} else if codexRegex.MatchString(content) {
+		detectedModel = "codex"
+	}
+
+	if detectedModel != "" && detectedModel != w.model {
+		w.model = detectedModel
+		if w.onReport != nil {
+			w.onReport(w.name, map[string]string{"model": detectedModel, "auto": "true"})
+		}
+	}
+
+	// 2. Quota scraping
+	matches := quotaRegex.FindAllStringSubmatch(content, -1)
+	if len(matches) > 0 {
+		// Take the last one (most recent)
+		m := matches[len(matches)-1]
+		if len(m) >= 7 {
+			quotaStr := fmt.Sprintf("5h:%s%% wk:%s%% sn:%s%%", m[1], m[3], m[5])
+			resetETA := m[2]
+			val5h, _ := strconv.Atoi(m[1])
+
+			if w.onReport != nil {
+				w.onReport(w.name, map[string]string{"quota": quotaStr, "reset": resetETA, "5h": m[1]})
+			}
+
+			// Alert on 90% threshold
+			if val5h >= 90 && w.last5h < 90 {
+				w.notifyThreshold(val5h)
+			}
+			w.last5h = val5h
+		}
+	}
+}
+
+func (w *Watcher) notifyThreshold(val int) {
+	msg := fmt.Sprintf("quota warn: %s 5h=%d%%", w.name, val)
+	log.Printf("ALERT: %s", msg)
+	if w.onNotify != nil {
+		w.onNotify(BufferNotification{
+			SessionName:   w.name,
+			Status:        w.status,
+			StatusChanged: false,
+			Content:       msg, // special message for alert
+		})
+	}
 }

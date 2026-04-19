@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -38,6 +39,11 @@ type Daemon struct {
 	sessions    map[string]string   // session name -> pipe path
 	wsURLs      map[string]string   // session name -> WebSocket URL (for web sessions)
 	appRuntimes map[string]string   // session name -> app runtime (winui3/win32/web)
+	models      map[string]string   // session name -> model name
+	manualModels map[string]bool    // session name -> true if set via flag/manual
+	quotas      map[string]string   // session name -> quota string
+	resets      map[string]string   // session name -> reset ETA
+	val5hs      map[string]int      // session name -> numeric 5h %
 	watchers    map[string]*Watcher // session name -> watcher
 	lastNotify  map[string]BufferNotification
 	onNotify    func(BufferNotification) // external callback (optional)
@@ -51,6 +57,11 @@ func New() *Daemon {
 		sessions:    make(map[string]string),
 		wsURLs:      make(map[string]string),
 		appRuntimes: make(map[string]string),
+		models:      make(map[string]string),
+		manualModels: make(map[string]bool),
+		quotas:      make(map[string]string),
+		resets:      make(map[string]string),
+		val5hs:      make(map[string]int),
 		watchers:    make(map[string]*Watcher),
 		lastNotify:  make(map[string]BufferNotification),
 		lastUsed:    make(map[string]string),
@@ -142,6 +153,8 @@ func (d *Daemon) addSession(name, pipePath, wsURL, sessionFile string, pid int, 
 		if d.onNotify != nil {
 			d.onNotify(n)
 		}
+	}, func(name string, tags map[string]string) {
+		d.TagSession(name, tags)
 	})
 	d.watchers[name] = w
 	go w.Run(context.Background())
@@ -225,6 +238,8 @@ func (d *Daemon) listSessions() []sessionInfo {
 			Uptime:      uptime,
 			LastAct:     lastAct,
 			LastActSecs: lastActSecs,
+			Model:       d.models[name],
+			Quota:       d.quotas[name],
 		})
 	}
 	return result
@@ -644,4 +659,40 @@ func (d *Daemon) registerCallbackHook(targetSession, callerSession string) {
 
 	d.AddIdleHook(hook)
 	log.Printf("daemon: auto-registered callback hook %s -> %s", targetSession, actualCaller)
+}
+
+// TagSession updates metadata for a session.
+func (d *Daemon) TagSession(name string, tags map[string]string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if _, ok := d.sessions[name]; !ok {
+		return fmt.Errorf("session not found: %s", name)
+	}
+
+	if model, ok := tags["model"]; ok {
+		isAuto := tags["auto"] == "true"
+		// Only update if not already manually tagged, or if this is a manual tag
+		if !isAuto || !d.manualModels[name] {
+			d.models[name] = model
+			if !isAuto {
+				d.manualModels[name] = true
+			}
+			log.Printf("daemon: tagged session %q with model=%q (auto=%v)", name, model, isAuto)
+		}
+	}
+
+	if quota, ok := tags["quota"]; ok {
+		d.quotas[name] = quota
+	}
+	if reset, ok := tags["reset"]; ok {
+		d.resets[name] = reset
+	}
+	if val5hStr, ok := tags["5h"]; ok {
+		if val, err := strconv.Atoi(val5hStr); err == nil {
+			d.val5hs[name] = val
+		}
+	}
+
+	return nil
 }

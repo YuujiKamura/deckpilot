@@ -22,6 +22,10 @@ type listEntry struct {
 	Uptime      string `json:"uptime"`
 	LastAct     string `json:"last_act,omitempty"`
 	LastActSecs int64  `json:"last_act_secs,omitempty"`
+	Model       string `json:"model,omitempty"`
+	Quota       string `json:"quota,omitempty"`
+	Reset       string `json:"reset,omitempty"`
+	Val5h       int    `json:"val5h,omitempty"`
 }
 
 const (
@@ -73,17 +77,35 @@ func colorLastAct(padded string, ageSecs int64, isTTY bool) string {
 // renderListTable writes the NOW: header and table to out.
 // isTTY controls whether ANSI color is applied to the LAST-ACT column.
 // Callers pass time.Now().In(cmdJST) for deterministic testing.
-func renderListTable(sessions []listEntry, now time.Time, out io.Writer, isTTY bool) {
+func renderListTable(sessions []listEntry, now time.Time, out io.Writer, isTTY bool, showUsage bool) {
 	if len(sessions) == 0 {
 		fmt.Fprintln(out, "no active sessions")
 		return
 	}
 
 	fmt.Fprintf(out, "NOW: %s\n\n", now.Format("2006-01-02 Mon 15:04 MST"))
-	fmt.Fprintf(out, "%-25s %-6s %-10s %-10s %-11s %s\n", "NAME", "PID", "RUNTIME", "UPTIME", "LAST-ACT", "STATUS")
+	fmt.Fprintf(out, "%-25s %-6s %-10s %-10s %-10s %-11s %s\n", "NAME", "PID", "MODEL", "RUNTIME", "UPTIME", "LAST-ACT", "STATUS")
+	max5h := 0
+	commonReset := ""
+
 	for _, s := range sessions {
 		lastActCell := colorLastAct(fmt.Sprintf("%-11s", s.LastAct), s.LastActSecs, isTTY)
-		fmt.Fprintf(out, "%-25s %-6d %-10s %-10s %s %s\n", s.Name, s.PID, s.AppRuntime, s.Uptime, lastActCell, s.Status)
+		model := s.Model
+		if model == "" {
+			model = "none"
+		}
+		fmt.Fprintf(out, "%-25s %-6d %-10s %-10s %-10s %s %s\n", s.Name, s.PID, model, s.AppRuntime, s.Uptime, lastActCell, s.Status)
+
+		if s.Val5h > max5h {
+			max5h = s.Val5h
+		}
+		if s.Reset != "" {
+			commonReset = s.Reset
+		}
+	}
+
+	if showUsage && max5h > 0 {
+		fmt.Fprintf(out, "\nUSAGE: max(5h)=%d%% (%s)\n", max5h, commonReset)
 	}
 }
 
@@ -100,7 +122,18 @@ func List(args []string) {
 		os.Exit(1)
 	}
 
-	if len(args) > 0 && args[0] == "--json" {
+	showJSON := false
+	showUsage := false
+	for _, a := range args {
+		if a == "--json" {
+			showJSON = true
+		}
+		if a == "--usage" {
+			showUsage = true
+		}
+	}
+
+	if showJSON {
 		fmt.Println(raw)
 		return
 	}
@@ -112,5 +145,5 @@ func List(args []string) {
 	}
 
 	isTTY := term.IsTerminal(int(os.Stdout.Fd()))
-	renderListTable(sessions, time.Now().In(cmdJST), os.Stdout, isTTY)
+	renderListTable(sessions, time.Now().In(cmdJST), os.Stdout, isTTY, showUsage)
 }

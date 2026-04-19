@@ -29,8 +29,10 @@ type sessionInfo struct {
 	AppRuntime string `json:"app_runtime"`
 	Status     string `json:"status"`
 	Uptime     string `json:"uptime"`
-	LastAct    string `json:"last_act,omitempty"`
+	LastAct     string `json:"last_act,omitempty"`
 	LastActSecs int64 `json:"last_act_secs,omitempty"`
+	Model       string `json:"model,omitempty"`
+	Quota       string `json:"quota,omitempty"`
 }
 
 // BufferNotification is emitted when a watcher detects a change or stability.

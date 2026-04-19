@@ -34,6 +34,8 @@ func main() {
 		cmd.List(os.Args[2:])
 	case "show":
 		cmd.Show(os.Args[2:])
+	case "tag":
+		cmd.Tag(os.Args[2:])
 	case "launch":
 		cmd.Launch(os.Args[2:])
 	case "watch":
@@ -54,8 +56,10 @@ func main() {
 Commands:
   send             <session> <message...>         Send message to a session
   show             [session] [--tail N] [--history] [--follow]  Get session buffer (detail, view-only; for approval use auto-approvals)
+  tag              <session> [--model name]       Manual metadata override
   list                                            List active sessions (alias: ls)
   launch           <agent> <prompt...> [--cwd D]  Start agent in new Ghostty window
+                   [--model name]
   watch            [session] [--once] [--json]    Monitor sessions (view-only, no approval)
   auto-approvals   <session> [--interval 2s]      Auto-approve prompts (alias: approve)
                    [--dry-run] [--verbose]
@@ -67,7 +71,7 @@ Commands:
 Run 'deckpilot help' for this message.
 `)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\n\nAvailable commands: send, show, list, ls, launch, watch, auto-approvals, approve, notify, wait-idle, shutdown\nRun 'deckpilot help' for usage.\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n\nAvailable commands: send, show, tag, list, ls, launch, watch, auto-approvals, approve, notify, wait-idle, shutdown\nRun 'deckpilot help' for usage.\n", os.Args[1])
 		os.Exit(1)
 	}
 }
