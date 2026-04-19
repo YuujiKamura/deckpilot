@@ -20,7 +20,7 @@ func TestRenderListTable_NowHeader(t *testing.T) {
 		{Name: "ghostty-40328", PID: 40328, AppRuntime: "winui3", Uptime: "5h13m", LastAct: "2m ago", Status: "idle"},
 	}
 	var buf bytes.Buffer
-	renderListTable(sessions, fixedNow(), &buf, false)
+	renderListTable(sessions, fixedNow(), &buf, false, false)
 	out := buf.String()
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	if !strings.HasPrefix(lines[0], "NOW: 2026-04-19 Sun 08:10 JST") {
@@ -34,7 +34,7 @@ func TestRenderListTable_LastActColumn(t *testing.T) {
 		{Name: "ghostty-40328", PID: 40328, AppRuntime: "winui3", Uptime: "5h13m", LastAct: "2m ago", Status: "idle"},
 	}
 	var buf bytes.Buffer
-	renderListTable(sessions, fixedNow(), &buf, false)
+	renderListTable(sessions, fixedNow(), &buf, false, false)
 	out := buf.String()
 	if !strings.Contains(out, "LAST-ACT") {
 		t.Errorf("output should contain LAST-ACT column header, got:\n%s", out)
@@ -50,7 +50,7 @@ func TestRenderListTable_StaleStatus(t *testing.T) {
 		{Name: "ghostty-36236", PID: 36236, AppRuntime: "winui3", Uptime: "5h16m", LastAct: "4h37m", Status: "stale"},
 	}
 	var buf bytes.Buffer
-	renderListTable(sessions, fixedNow(), &buf, false)
+	renderListTable(sessions, fixedNow(), &buf, false, false)
 	out := buf.String()
 	if !strings.Contains(out, "stale") {
 		t.Errorf("output should contain 'stale' status, got:\n%s", out)
@@ -60,7 +60,7 @@ func TestRenderListTable_StaleStatus(t *testing.T) {
 // TestRenderListTable_Empty asserts no header line is printed when there are no sessions.
 func TestRenderListTable_Empty(t *testing.T) {
 	var buf bytes.Buffer
-	renderListTable([]listEntry{}, fixedNow(), &buf, false)
+	renderListTable([]listEntry{}, fixedNow(), &buf, false, false)
 	out := buf.String()
 	if strings.Contains(out, "NOW:") {
 		t.Errorf("NOW: header should not appear when there are no sessions, got:\n%s", out)
@@ -135,7 +135,7 @@ func TestRenderListTable_ColorTTY(t *testing.T) {
 		{Name: "s-red", PID: 3, AppRuntime: "winui3", Uptime: "3h", LastAct: "2h05m", LastActSecs: (2*60 + 5) * 60, Status: "stale"},
 	}
 	var buf bytes.Buffer
-	renderListTable(sessions, fixedNow(), &buf, true)
+	renderListTable(sessions, fixedNow(), &buf, true, false)
 	out := buf.String()
 
 	if !strings.Contains(out, ansiYellow) {
@@ -159,7 +159,7 @@ func TestRenderListTable_NoPipeColor(t *testing.T) {
 		{Name: "s-stale", PID: 1, AppRuntime: "winui3", Uptime: "3h", LastAct: "2h30m", LastActSecs: (2*60 + 30) * 60, Status: "stale"},
 	}
 	var buf bytes.Buffer
-	renderListTable(sessions, fixedNow(), &buf, false)
+	renderListTable(sessions, fixedNow(), &buf, false, false)
 	out := buf.String()
 	if strings.Contains(out, "\x1b[") {
 		t.Errorf("pipe mode: output must not contain ANSI escapes, got:\n%s", out)

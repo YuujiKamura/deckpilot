@@ -10,7 +10,7 @@ func TestExecuteCallbackHook(t *testing.T) {
 	
 	// Create a mock caller watcher
 	// Note: pipePath and sessionFile don't matter as we won't run the watcher's Run loop
-	callerWatcher := NewWatcher("caller_session", "fake_pipe", "fake_file", 123, "", nil)
+	callerWatcher := NewWatcher("caller_session", "fake_pipe", "fake_file", 123, "", nil, nil)
 	d.mu.Lock()
 	d.watchers["caller_session"] = callerWatcher
 	d.mu.Unlock()
@@ -63,8 +63,8 @@ func TestResolveCallerSession(t *testing.T) {
 	d := New()
 	
 	// Create two sessions
-	s1 := NewWatcher("session1", "p1", "f1", 1, "", nil)
-	s2 := NewWatcher("session2", "p2", "f2", 2, "", nil)
+	s1 := NewWatcher("session1", "p1", "f1", 1, "", nil, nil)
+	s2 := NewWatcher("session2", "p2", "f2", 2, "", nil, nil)
 
 	// Default status is "active", set them to "idle" initially
 	s1.mu.Lock()
@@ -116,8 +116,8 @@ func TestShouldRegisterCallback(t *testing.T) {
 	d := New()
 	
 	// Create sessions
-	s1 := NewWatcher("session1", "p1", "f1", 1, "", nil)
-	s2 := NewWatcher("session2", "p2", "f2", 2, "", nil)
+	s1 := NewWatcher("session1", "p1", "f1", 1, "", nil, nil)
+	s2 := NewWatcher("session2", "p2", "f2", 2, "", nil, nil)
 
 	d.mu.Lock()
 	d.watchers["session1"] = s1
@@ -152,7 +152,7 @@ func TestShouldRegisterCallback(t *testing.T) {
 func TestShouldRegisterCallback_RejectsHeuristicSelfLoop(t *testing.T) {
 	d := New()
 
-	target := NewWatcher("ghostty-71964", "pt", "ft", 1, "", nil)
+	target := NewWatcher("ghostty-71964", "pt", "ft", 1, "", nil, nil)
 	// Simulate "just got a send" — target is the most recently active watcher.
 	target.mu.Lock()
 	target.status = "active"

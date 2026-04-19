@@ -9,8 +9,8 @@ func TestAgentToAgentCommunication(t *testing.T) {
 	d := New()
 	
 	// Setup two mock agents
-	agentA := NewWatcher("agent-a", "pipe-a", "file-a", 101, "", nil)
-	agentB := NewWatcher("agent-b", "pipe-b", "file-b", 102, "", nil)
+	agentA := NewWatcher("agent-a", "pipe-a", "file-a", 101, "", nil, nil)
+	agentB := NewWatcher("agent-b", "pipe-b", "file-b", 102, "", nil, nil)
 	
 	// Initially they are idle (default active, so we set them)
 	agentA.mu.Lock()

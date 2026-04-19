@@ -54,7 +54,7 @@ func newIdleNotification(target string) BufferNotification {
 // could double-fire the same one-time hook. Lock the invariant now.
 func TestHookInvariant_OneTimeFiresExactlyOnce(t *testing.T) {
 	d := New()
-	callerW := NewWatcher("caller", "p", "f", 1, "", nil)
+	callerW := NewWatcher("caller", "p", "f", 1, "", nil, nil)
 	d.mu.Lock()
 	d.watchers["caller"] = callerW
 	d.mu.Unlock()
@@ -99,7 +99,7 @@ func TestHookInvariant_DeadCallbackSessionDoesNotCrash(t *testing.T) {
 
 	// Install, then immediately remove, a would-be caller. Hook references
 	// it by name only — the name lookup at fire time must fail soft.
-	tmpW := NewWatcher("ghost", "p", "f", 1, "", nil)
+	tmpW := NewWatcher("ghost", "p", "f", 1, "", nil, nil)
 	d.mu.Lock()
 	d.watchers["ghost"] = tmpW
 	d.mu.Unlock()
@@ -130,7 +130,7 @@ func TestHookInvariant_DeadCallbackSessionDoesNotCrash(t *testing.T) {
 // with -race to catch regressions introduced by per-adapter state.
 func TestHookInvariant_ConcurrentFiresDoNotRace(t *testing.T) {
 	d := New()
-	callerW := NewWatcher("caller", "p", "f", 1, "", nil)
+	callerW := NewWatcher("caller", "p", "f", 1, "", nil, nil)
 	d.mu.Lock()
 	d.watchers["caller"] = callerW
 	d.mu.Unlock()
@@ -169,7 +169,7 @@ func TestHookInvariant_ConcurrentFiresDoNotRace(t *testing.T) {
 // sees the text queued in the prompt buffer but never submitted.
 func TestHookInvariant_CallbackPayloadEndsWithNewline(t *testing.T) {
 	d := New()
-	callerW := NewWatcher("caller", "p", "f", 1, "", nil)
+	callerW := NewWatcher("caller", "p", "f", 1, "", nil, nil)
 	d.mu.Lock()
 	d.watchers["caller"] = callerW
 	d.mu.Unlock()
