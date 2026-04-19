@@ -97,6 +97,14 @@ func (d *Daemon) handleSend(parts []string) string {
 		caller = parts[3]
 	}
 
+	// Layer 0 (Issue #25): serialize handleSend per session. The full 4-phase
+	// logical command must be atomic against any other SEND targeting the same
+	// session. Blocking acquire is correct for user sends; callers that cannot
+	// afford to queue (e.g. auto-approvals) should use TryAcquireSendLock at
+	// a higher level. See daemon/sendlock.go.
+	d.AcquireSendLock(name)
+	defer d.ReleaseSendLock(name)
+
 	msgBytes, err := base64.StdEncoding.DecodeString(msgB64)
 	if err != nil {
 		return fmt.Sprintf("ERR|bad base64: %v\n", err)

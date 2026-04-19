@@ -40,6 +40,14 @@ type Daemon struct {
 	onNotify    func(BufferNotification) // external callback (optional)
 	lastUsed    map[string]string        // caller -> session name
 	idleHooks   []IdleHook               // hooks to execute on idle transition
+
+	// sendLocks serializes handleSend invocations per session so that the
+	// full logical command (Phase 0-3: baseline → INPUT → Enter → confirm)
+	// is atomic against concurrent SEND traffic (e.g. auto-approvals Enter
+	// racing a user send). See daemon/sendlock.go and
+	// https://github.com/YuujiKamura/deckpilot/issues/25.
+	sendLocks         *sendLockRegistry
+	sendLocksInitOnce sync.Once
 }
 
 // New creates a new Daemon instance.
@@ -52,6 +60,7 @@ func New() *Daemon {
 		lastNotify:  make(map[string]BufferNotification),
 		lastUsed:    make(map[string]string),
 		idleHooks:   make([]IdleHook, 0),
+		sendLocks:   newSendLockRegistry(),
 	}
 }
 
