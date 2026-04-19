@@ -37,6 +37,16 @@ type HangInfo struct {
 	CPUPercent   float64       // aggregate over the last sample interval
 	StallSince   time.Duration // how long since last-act updated
 	DetectedAt   time.Time
+
+	// Source identifies which signal fired the action. Drives log
+	// severity and operator trust:
+	//   "os-hung"    — Win32 IsHungAppWindow says the message pump
+	//                  has stopped. Authoritative; same criterion
+	//                  Task Manager uses.
+	//   "heuristic"  — CPU below threshold AND stall exceeded.
+	//                  Best-effort; may false-positive on low-CPU
+	//                  workloads that are still making progress.
+	Source string
 }
 
 // HangConfig tunes the detector. All fields are required except
@@ -49,6 +59,18 @@ type HangConfig struct {
 	Sampler      CPUSampler
 	LastActOf    func() time.Time // returns last-act timestamp for the session
 	Action       HangAction
+
+	// WatcherStatusOf is the OS-authoritative fast path (issue #26
+	// pivot). If non-nil, probeOnce calls it and fires Action
+	// immediately when the returned status is "stalled" — the
+	// Watcher's code word for IsHungAppWindow(hwnd)==TRUE. CPU + stall
+	// are skipped in that branch so Task Manager's "Not Responding"
+	// verdict translates to an action in one probe.
+	//
+	// Leave nil to disable the fast path (tests that want to
+	// exercise the heuristic branch explicitly, web sessions without
+	// a window handle, etc.).
+	WatcherStatusOf func() string
 
 	CPUThreshold   float64       // e.g. 1.0 (percent, aggregate)
 	StallSeconds   time.Duration // e.g. 60 * time.Second
@@ -162,10 +184,47 @@ func (d *HangDetector) ProbeOnce(ctx context.Context) error {
 	return d.probeOnce(ctx)
 }
 
+// inCooldown reports whether the most recent Action dispatch happened
+// within the configured cooldown window. Kept as a separate method so
+// both the os-hung fast path and the heuristic slow path share the
+// same suppression logic.
+func (d *HangDetector) inCooldown() bool {
+	if d.lastDispatch.IsZero() {
+		return false
+	}
+	return d.cfg.Now().Sub(d.lastDispatch) < d.cfg.Cooldown
+}
+
 // probeOnce is the internal implementation, kept unexported so tests in
 // the same package can exercise it without the ctx dance when they
 // want to assert side-effects directly.
 func (d *HangDetector) probeOnce(ctx context.Context) error {
+	// 0. OS-authoritative fast path (issue #26 pivot).
+	//    The Watcher polls IsHungAppWindow(hwnd) every tick and flips
+	//    its status to "stalled" when Windows itself declares the
+	//    window non-responsive. That is the same signal Task Manager
+	//    uses; trust it over CPU/stall heuristics.
+	if d.cfg.WatcherStatusOf != nil {
+		if d.cfg.WatcherStatusOf() == "stalled" {
+			if d.inCooldown() {
+				return nil
+			}
+			info := HangInfo{
+				SessionName: d.cfg.SessionName,
+				RootPID:     d.cfg.RootPID,
+				DetectedAt:  d.cfg.Now(),
+				Source:      "os-hung",
+			}
+			log.Printf("hangdetect[%s]: HANG DETECTED via os-hung (IsHungAppWindow)",
+				info.SessionName)
+			d.lastDispatch = d.cfg.Now()
+			if err := d.cfg.Action(ctx, info); err != nil {
+				log.Printf("hangdetect[%s]: action error: %v", info.SessionName, err)
+			}
+			return nil
+		}
+	}
+
 	// 1. Enumerate target pids.
 	var pids []uint32
 	if d.cfg.IncludeChildren {
@@ -208,8 +267,7 @@ func (d *HangDetector) probeOnce(ctx context.Context) error {
 	}
 
 	// 5. Cooldown.
-	if !d.lastDispatch.IsZero() &&
-		d.cfg.Now().Sub(d.lastDispatch) < d.cfg.Cooldown {
+	if d.inCooldown() {
 		return nil
 	}
 
@@ -220,8 +278,9 @@ func (d *HangDetector) probeOnce(ctx context.Context) error {
 		CPUPercent:   percent,
 		StallSince:   stall,
 		DetectedAt:   d.cfg.Now(),
+		Source:       "heuristic",
 	}
-	log.Printf("hangdetect[%s]: HANG DETECTED (cpu=%.2f%%, stall=%s, procs=%d)",
+	log.Printf("hangdetect[%s]: HANG DETECTED via heuristic (cpu=%.2f%%, stall=%s, procs=%d)",
 		info.SessionName, info.CPUPercent, info.StallSince, info.ProcessCount)
 
 	d.lastDispatch = d.cfg.Now()
