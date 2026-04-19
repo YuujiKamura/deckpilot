@@ -102,6 +102,7 @@ func (d *Daemon) handleSend(parts []string) string {
 		return fmt.Sprintf("ERR|bad base64: %v\n", err)
 	}
 	msg := string(msgBytes)
+	log.Printf("[%s] send -> %s: %q", time.Now().In(JST).Format("2006-01-02 Mon 15:04:05 MST"), name, msg)
 
 	pipePath, ok := d.resolvePipePath(name)
 	if !ok {
