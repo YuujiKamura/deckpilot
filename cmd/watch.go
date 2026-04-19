@@ -83,7 +83,7 @@ func Watch(args []string) {
 				continue
 			}
 
-			content, _, _, _, showErr := daemon.DaemonShow(s.Name, "buffer", caller)
+			content, _, _, _, _, _, showErr := daemon.DaemonShow(s.Name, "buffer", caller)
 			pending := "-"
 			tail := ""
 

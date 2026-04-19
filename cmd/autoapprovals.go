@@ -112,7 +112,7 @@ func AutoApprovals(args []string) {
 				continue
 			}
 
-			content, _, _, _, err := daemon.DaemonShow(sessionName, "buffer", caller)
+			content, _, _, _, _, _, err := daemon.DaemonShow(sessionName, "buffer", caller)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "[%s] auto-approvals: %v (retrying...)\n", time.Now().Format("15:04:05"), err)
 				continue
