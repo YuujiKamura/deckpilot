@@ -6,3 +6,6 @@ LOCAL_APPDATA_FONTCONFIG_CACHE/
 .gstack/
 tmp/
 spec-prompt/
+coverage
+coverage.out
+coverage.html
