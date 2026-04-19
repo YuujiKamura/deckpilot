@@ -148,7 +148,21 @@ func AutoApprovals(args []string) {
 					fmt.Fprintf(os.Stderr, "[%s] Prompt detected, sending Enter%s\n", ts, dryTag)
 				}
 				if !dryRun {
-					if _, err := daemon.DaemonSend(sessionName, "", caller); err != nil {
+					// Phase 0.5 (issue #25): never queue behind a user send.
+					// 500ms budget is long enough to win an uncontended lock
+					// but short enough to bail out and retry on the next tick
+					// (default 2s interval) without flooding the pipe.
+					if _, err := daemon.DaemonSendTry(sessionName, "", caller, 500); err != nil {
+						if strings.Contains(err.Error(), "lock_timeout") {
+							if verbose {
+								fmt.Fprintf(os.Stderr, "[%s] approve skipped: busy (user send in flight)\n",
+									time.Now().Format("15:04:05"))
+							}
+							// Do not mark sentEnter / bump entersSent — a
+							// skipped tick should not count toward the
+							// backoff ceiling.
+							continue
+						}
 						fmt.Fprintf(os.Stderr, "auto-approvals: send failed: %v\n", err)
 					}
 				}

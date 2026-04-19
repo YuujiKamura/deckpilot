@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 	"os"
@@ -87,7 +88,7 @@ func handleVersion() string {
 
 func (d *Daemon) handleSend(parts []string) string {
 	if len(parts) < 3 {
-		return "ERR|usage: SEND|<name>|<base64msg>\n"
+		return "ERR|usage: SEND|<name>|<base64msg>[|caller[|timeout_ms]]\n"
 	}
 	name := parts[1]
 	msgB64 := parts[2]
@@ -97,12 +98,28 @@ func (d *Daemon) handleSend(parts []string) string {
 		caller = parts[3]
 	}
 
+	// Phase 0.5 (Issue #25): optional 5th protocol field is a lock-acquire
+	// timeout in milliseconds. Auto-approvals uses this so it never queues
+	// behind a user send — it either acquires within its budget or bails
+	// out and retries on the next tick. Absence or 0 keeps the legacy
+	// blocking acquire behavior used by `deckpilot send`.
+	lockTimeoutMs := 0
+	if len(parts) >= 5 && parts[4] != "" {
+		if v, err := strconv.Atoi(parts[4]); err == nil && v > 0 {
+			lockTimeoutMs = v
+		}
+	}
+
 	// Layer 0 (Issue #25): serialize handleSend per session. The full 4-phase
 	// logical command must be atomic against any other SEND targeting the same
-	// session. Blocking acquire is correct for user sends; callers that cannot
-	// afford to queue (e.g. auto-approvals) should use TryAcquireSendLock at
-	// a higher level. See daemon/sendlock.go.
-	d.AcquireSendLock(name)
+	// session. See daemon/sendlock.go.
+	if lockTimeoutMs > 0 {
+		if !d.TryAcquireSendLock(name, time.Duration(lockTimeoutMs)*time.Millisecond) {
+			return fmt.Sprintf("ERR|busy|lock_timeout_%dms\n", lockTimeoutMs)
+		}
+	} else {
+		d.AcquireSendLock(name)
+	}
 	defer d.ReleaseSendLock(name)
 
 	msgBytes, err := base64.StdEncoding.DecodeString(msgB64)
@@ -401,10 +418,35 @@ func dialDaemon(command string) (string, error) {
 }
 
 // DaemonSend sends a message to the named session via the daemon.
+// Uses blocking lock acquisition; callers willing to queue behind another
+// in-flight send should prefer this.
 // Returns status feedback from watcher (e.g. "submitted (status: idle → active)").
 func DaemonSend(name, message, caller string) (string, error) {
 	encoded := base64.StdEncoding.EncodeToString([]byte(message))
 	resp, err := dialDaemon(fmt.Sprintf("SEND|%s|%s|%s", name, encoded, caller))
+	if err != nil {
+		return "", err
+	}
+	if strings.HasPrefix(resp, "ERR|") {
+		return "", fmt.Errorf("%s", strings.TrimPrefix(resp, "ERR|"))
+	}
+	return strings.TrimPrefix(resp, "OK|"), nil
+}
+
+// DaemonSendTry sends a message with a bounded lock-acquire timeout (Phase
+// 0.5, issue #25). If another SEND is in flight on the same session and
+// cannot release the send lock within timeoutMs, the daemon returns
+// ERR|busy|lock_timeout_Xms and no pipe bytes are written. This lets
+// auto-approvals skip a tick cleanly instead of queueing behind a long
+// user send.
+//
+// timeoutMs ≤ 0 falls back to the blocking DaemonSend behavior.
+func DaemonSendTry(name, message, caller string, timeoutMs int) (string, error) {
+	if timeoutMs <= 0 {
+		return DaemonSend(name, message, caller)
+	}
+	encoded := base64.StdEncoding.EncodeToString([]byte(message))
+	resp, err := dialDaemon(fmt.Sprintf("SEND|%s|%s|%s|%d", name, encoded, caller, timeoutMs))
 	if err != nil {
 		return "", err
 	}
