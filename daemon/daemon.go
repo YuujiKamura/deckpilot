@@ -200,6 +200,7 @@ func (d *Daemon) listSessions() []sessionInfo {
 		status := "unknown"
 		uptime := ""
 		lastAct := ""
+		var lastActSecs int64
 		pid := 0
 		if w, ok := d.watchers[name]; ok {
 			status = w.Status()
@@ -207,19 +208,23 @@ func (d *Daemon) listSessions() []sessionInfo {
 			uptime = formatUptime(time.Since(p.CreatedAt))
 			pid = p.PID
 			lastAct = formatLastAct(p.LastChangedAt)
+			if !p.LastChangedAt.IsZero() {
+				lastActSecs = int64(time.Since(p.LastChangedAt).Seconds())
+			}
 			if status == "idle" && !p.LastChangedAt.IsZero() && time.Since(p.LastChangedAt) > staleThreshold {
 				status = "stale"
 			}
 		}
 		result = append(result, sessionInfo{
-			Name:       name,
-			PID:        pid,
-			PipePath:   pipePath,
-			WsURL:      d.wsURLs[name],
-			AppRuntime: d.appRuntimes[name],
-			Status:     status,
-			Uptime:     uptime,
-			LastAct:    lastAct,
+			Name:        name,
+			PID:         pid,
+			PipePath:    pipePath,
+			WsURL:       d.wsURLs[name],
+			AppRuntime:  d.appRuntimes[name],
+			Status:      status,
+			Uptime:      uptime,
+			LastAct:     lastAct,
+			LastActSecs: lastActSecs,
 		})
 	}
 	return result
