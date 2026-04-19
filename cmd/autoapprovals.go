@@ -12,12 +12,17 @@ import (
 
 // AutoApprovals monitors a session and automatically sends Enter when an
 // approval prompt is detected. Flags: --dry-run, --verbose, --interval <dur>,
-// --agent <claude|gemini|codex>.
-// usage: deckpilot auto-approvals <session> [--interval 2s] [--dry-run] [--verbose] [--agent <name>]
+// --agent <claude|gemini|codex>, --observe (detect-only, never send).
+// usage: deckpilot auto-approvals <session> [--interval 2s] [--dry-run] [--verbose] [--agent <name>] [--observe]
+//
+// Phase 2 (issue #25): --observe wraps the selected agent adapter in
+// ObservationAdapter so matches are logged without any keystroke injection.
+// Use this to discover new approval patterns in production safely.
 func AutoApprovals(args []string) {
 	var sessionName string
 	dryRun := false
 	verbose := false
+	observeMode := false
 	interval := 2 * time.Second
 	agentType := "" // empty → auto-detect, then fall back to "claude"
 
@@ -27,6 +32,8 @@ func AutoApprovals(args []string) {
 			dryRun = true
 		case "--verbose":
 			verbose = true
+		case "--observe":
+			observeMode = true
 		case "--interval":
 			if i+1 >= len(args) {
 				fmt.Fprintln(os.Stderr, "auto-approvals: --interval requires a duration argument (e.g. 2s, 500ms)")
@@ -146,6 +153,17 @@ func AutoApprovals(args []string) {
 					fmt.Fprintf(os.Stderr, "[%s] Prompt detected (matched: %q)%s\n", ts, matched, dryTag)
 				} else {
 					fmt.Fprintf(os.Stderr, "[%s] Prompt detected, sending Enter%s\n", ts, dryTag)
+				}
+				if observeMode {
+					// Phase 2 (issue #25): detect-only. Log the match and
+					// continue — never touch the pipe. Useful for pattern
+					// discovery on new agents.
+					fmt.Fprintf(os.Stderr, "[%s] observe: matched=%q agent=%s (send suppressed)\n",
+						time.Now().Format("15:04:05"), matched, agentType)
+					// Keep sentEnter true so we don't re-log on every tick
+					// while the same prompt is on screen.
+					sentEnter = true
+					continue
 				}
 				if !dryRun {
 					// Phase 0.5 (issue #25): never queue behind a user send.
