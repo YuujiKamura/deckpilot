@@ -243,15 +243,19 @@ func TestAutoApprovalsIntervalFlag(t *testing.T) {
 }
 
 // TestWatchOnceJSON verifies "watch --once --json" produces valid JSON lines
-// (or exits cleanly with no active sessions). Skipped in short mode.
+// on stdout. The contract of --json is "machine-parseable stdout"; human-
+// oriented status ("no active sessions", "watch: list: no response from
+// daemon", etc.) goes to stderr and must not contaminate the parse.
+// Skipped in short mode.
 func TestWatchOnceJSON(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping E2E test in short mode")
 	}
 	cmd := exec.Command(deckpilotExe, "watch", "--once", "--json")
-	out, err := cmd.CombinedOutput()
-	// "watch" may exit non-zero when no sessions are active (daemon unavailable).
-	// Either way, any stdout lines must be valid JSON.
+	// Output() reads only stdout; stderr (including "no active sessions"
+	// when CI has no Ghostty processes, and any daemon-unavailable
+	// warnings) is intentionally discarded here.
+	out, err := cmd.Output()
 	outStr := strings.TrimSpace(string(out))
 	for _, line := range strings.Split(outStr, "\n") {
 		line = strings.TrimSpace(line)
