@@ -226,6 +226,46 @@ Daemon は `\\.\pipe\deckpilot-daemon` で以下のコマンドを受け付け�
 | LIST | `LIST` | `OK\|<json>` |
 | SHOW | `SHOW\|<name>\|<mode>\|<caller>` | `OK\|<base64content>\|<status>` |
 
+## WebSocket Endpoint
+
+The daemon exposes a WebSocket control endpoint for external agents and tools.
+
+- **URL**: `ws://127.0.0.1:8080/ws` (Localhost ONLY)
+- **Flag**: `--ws-port <N>` (Default: 8080, `0` to disable)
+- **Protocol**: One JSON object per frame.
+
+### Commands (Client → Server)
+
+| Cmd | Fields | Description |
+|-----|--------|-------------|
+| `INPUT` | `session`, `msg` (base64), `from` | Send message + Enter |
+| `SHOW` | `session`, `mode` (buffer/history) | Get session buffer |
+| `STATE` | `session` | Get session status |
+| `LIST` | (none) | List active sessions |
+| `PING` | (none) | Connection heartbeat |
+
+### Responses (Server → Client)
+
+Always returns a JSON object with `cmd`, `ok` (bool), and payload.
+
+Example `LIST`:
+```json
+{
+  "cmd": "LIST",
+  "ok": true,
+  "data": [{"name": "ghostty-1234", "status": "idle", ...}]
+}
+```
+
+Example `INPUT` error:
+```json
+{
+  "cmd": "INPUT",
+  "ok": false,
+  "error": "session not found: foo"
+}
+```
+
 ## License
 
 MIT
