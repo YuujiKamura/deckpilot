@@ -24,6 +24,24 @@ func main() {
 	switch os.Args[1] {
 	case "daemon":
 		d := daemon.New()
+		// Simple flag parsing for daemon
+		args := os.Args[2:]
+		for i := 0; i < len(args); i++ {
+			if args[i] == "--ws-port" {
+				i++
+				if i >= len(args) {
+					fmt.Fprintf(os.Stderr, "daemon: --ws-port requires a value\n")
+					os.Exit(1)
+				}
+				var port int
+				if _, err := fmt.Sscanf(args[i], "%d", &port); err != nil {
+					fmt.Fprintf(os.Stderr, "daemon: invalid --ws-port %q: %v\n", args[i], err)
+					os.Exit(1)
+				}
+				d.WSPort = port
+				fmt.Printf("daemon: setting WS port to %d\n", port)
+			}
+		}
 		if err := d.Run(); err != nil {
 			fmt.Fprintf(os.Stderr, "daemon: %v\n", err)
 			os.Exit(1)
@@ -38,6 +56,8 @@ func main() {
 		cmd.Launch(os.Args[2:])
 	case "watch":
 		cmd.Watch(os.Args[2:])
+	case "hang-detect":
+		cmd.HangDetect(os.Args[2:])
 	case "auto-approvals", "approve":
 		cmd.AutoApprovals(os.Args[2:])
 	case "notify":
@@ -57,6 +77,10 @@ Commands:
   list                                            List active sessions (alias: ls)
   launch           <agent> <prompt...> [--cwd D]  Start agent in new Ghostty window
   watch            [session] [--once] [--json]    Monitor sessions (view-only, no approval)
+  hang-detect      <session> [--cpu-threshold N]  Non-destructive hang monitor
+                   [--stall-seconds N] [--probe-interval DUR]
+                   [--on-hang notify|snapshot|ctrl-c|tiered]
+                   [--include-children|--no-include-children] [--once]
   auto-approvals   <session> [--interval 2s]      Auto-approve prompts (alias: approve)
                    [--dry-run] [--verbose]
   notify           add|remove|list <args>         Manage idle notification hooks

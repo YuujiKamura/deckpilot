@@ -139,12 +139,23 @@ func discoverFromProcesses() ([]Session, error) {
 				continue
 			}
 		}
-		sessions = append(sessions, Session{
+		s := Session{
 			Name:       fmt.Sprintf("ghostty-%d", pid),
 			PipePath:   pipePath,
 			PID:        pid,
 			AppRuntime: appRuntime,
-		})
+		}
+		// Issue #29 fix: process-based discovery previously returned
+		// Session entries with HWND="" and SessionFile="", which meant
+		// the Watcher never knew which window to check with
+		// IsHungAppWindow — every session looked healthy even when the
+		// OS had marked it "Not Responding". Enrich from the ghostty
+		// session file (well-known path) so HWND / LogFile / etc. are
+		// populated the same way discoverFromSessionFiles() would.
+		if enriched, err := enrichFromSessionFile(s, appRuntime); err == nil {
+			s = enriched
+		}
+		sessions = append(sessions, s)
 	}
 	return sessions, nil
 }
@@ -177,6 +188,50 @@ func findGhosttyPIDs() ([]int, error) {
 		}
 	}
 	return pids, nil
+}
+
+// enrichFromSessionFile finds the Ghostty session file matching the
+// given base Session and merges HWND / SessionFile / LogFile /
+// SessionName into it. Fields already set on base (Name, PipePath,
+// PID, AppRuntime) are preserved — only gaps are filled.
+//
+// Ghostty writes its session descriptor at
+//
+//	%LOCALAPPDATA%\ghostty\control-plane\<runtime>\sessions\<name>-<pid>.session
+//
+// On systems where LOCALAPPDATA is unset or the file is missing, this
+// returns an error and the caller keeps the unenriched Session (HWND
+// remains empty — hang detection won't work for that session, but the
+// pipe-level flows still operate).
+func enrichFromSessionFile(base Session, appRuntime string) (Session, error) {
+	localAppData := os.Getenv("LOCALAPPDATA")
+	if localAppData == "" {
+		return base, fmt.Errorf("LOCALAPPDATA not set")
+	}
+	path := fmt.Sprintf(
+		`%s\ghostty\control-plane\%s\sessions\%s-%d.session`,
+		localAppData, appRuntime, base.Name, base.PID,
+	)
+	parsed, err := parseSessionFile(path)
+	if err != nil {
+		return base, err
+	}
+	// Preserve base fields; pull in the ones discoverFromProcesses
+	// could not know about.
+	merged := base
+	if merged.HWND == "" {
+		merged.HWND = parsed.HWND
+	}
+	if merged.SessionFile == "" {
+		merged.SessionFile = parsed.SessionFile
+	}
+	if merged.LogFile == "" {
+		merged.LogFile = parsed.LogFile
+	}
+	if merged.WsURL == "" {
+		merged.WsURL = parsed.WsURL
+	}
+	return merged, nil
 }
 
 func parseSessionFile(path string) (Session, error) {
