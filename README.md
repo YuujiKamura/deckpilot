@@ -47,7 +47,7 @@ Each command has a single, well-defined responsibility:
 - Use **`watch`** when you want a live dashboard of all sessions and their approval status.
 - Use **`auto-approvals`** when you want Enter sent automatically on approval prompts.
 
-### `send` — Send a message
+### `send`  ESend a message
 
 ```bash
 deckpilot send <session> <message...>
@@ -59,7 +59,7 @@ Sends text + Enter to the specified session. Compares buffer hash before and aft
 - Slash commands (`/`-prefixed) send Enter twice to bypass TUI autocomplete.
 - Automatically reverses MSYS2/Git Bash path conversion.
 
-### `show` — Get session buffer (detail, view-only)
+### `show`  EGet session buffer (detail, view-only)
 
 ```bash
 deckpilot show [session] [--tail N] [--history] [--follow]
@@ -71,9 +71,9 @@ For auto-approval, use `deckpilot auto-approvals <session>`.
 - Session name optional: auto-selects the last session used by this caller.
 - `--tail N`: Show last N lines (default: 50).
 - `--history`: Retrieve full scrollback instead of live buffer.
-- `--follow` / `-f`: Poll every 2 seconds and print updates. Display-only — no approval.
+- `--follow` / `-f`: Poll every 2 seconds and print updates. Display-only  Eno approval.
 
-### `list` / `ls` — List sessions
+### `list` / `ls`  EList sessions
 
 ```bash
 deckpilot list
@@ -85,7 +85,7 @@ claude-01   winui3    idle
 codex-02    wt        active
 ```
 
-### `launch` — Start an agent
+### `launch`  EStart an agent
 
 ```bash
 deckpilot launch <agent> <prompt...> [--cwd DIR]
@@ -101,7 +101,7 @@ Starts a new Ghostty window, waits for the agent to be ready, then sends the pro
 | codex  | `codex --full-auto`                      | `›`          |
 | gemini | `gemini`                                 | `>`          |
 
-### `watch` — Monitor sessions (view-only)
+### `watch`  EMonitor sessions (view-only)
 
 ```bash
 deckpilot watch [session] [--once] [--json]
@@ -124,7 +124,7 @@ Flags:
 
 **Deprecated alias**: `deckpilot watch <session>` (with a session name argument) now emits a deprecation warning and runs in monitor-only mode. Use `deckpilot auto-approvals <session>` for auto-approval behavior. Suppress the warning with `DECKPILOT_SUPPRESS_DEPRECATION=1`.
 
-### `auto-approvals` — Auto-approve prompts (alias: `approve`)
+### `auto-approvals`  EAuto-approve prompts (alias: `approve`)
 
 ```bash
 deckpilot auto-approvals <session> [--interval 2s] [--dry-run] [--verbose]
@@ -149,77 +149,54 @@ Stop with Ctrl+C.
 
 ## Caller Identification
 
-`show` でセッション名を省略できるよう、呼び出し元ターミナルを自動識別する。
-
-**優先順位:**
-1. `DECKPILOT_CALLER` 環境変数（明示指定）
-2. `WT_SESSION` — Windows Terminal のタブ/ペイン GUID → `wt:<guid>`
-3. `GHOSTTY_SESSION` → `ghostty:<guid>`
-4. PPID（親プロセス ID）→ `pid:<ppid>`
+`show` でセチE��ョン名を省略できるよう、呼び出し�Eターミナルを�E動識別する、E
+**優先頁E��E**
+1. `DECKPILOT_CALLER` 環墁E��数�E��E示持E��！E2. `WT_SESSION`  EWindows Terminal のタチEペイン GUID ↁE`wt:<guid>`
+3. `GHOSTTY_SESSION` ↁE`ghostty:<guid>`
+4. PPID�E�親プロセス ID�E��E `pid:<ppid>`
 5. `default` フォールバック
 
-`send` 実行時に `lastUsed[caller] = session` を記録し、以降の `show` で自動解決する。
+`send` 実行時に `lastUsed[caller] = session` を記録し、以降�E `show` で自動解決する、E
+## セチE��ョン検�E
 
-## セッション検出
+2 段階�Eフォールバック:
 
-2 段階のフォールバック:
-
-### 1. .session ファイル（優先）
-
+### 1. .session ファイル�E�優先！E
 ```
 %LOCALAPPDATA%\ghostty\control-plane\{winui3,win32,web}\sessions\*.session
 %LOCALAPPDATA%\WindowsTerminal\control-plane\winui3\sessions\*.session
 ```
 
-key=value 形式で `session_name`, `pipe_path`, `pid`, `hwnd` を保持。プロセス生存と pipe 応答を検証し、不正なファイルは自動削除。Windows Terminal の場合は `wt-sidecar` がこのファイルを生成する。
+key=value 形式で `session_name`, `pipe_path`, `pid`, `hwnd` を保持。�Eロセス生存と pipe 応答を検証し、不正なファイルは自動削除。Windows Terminal の場合�E `wt-sidecar` がこのファイルを生成する、E
+### 2. プロセス探索�E�フォールバック�E�E
+Windows ToolHelp32 API で `ghostty.exe` を�E挙し、既知のパイプ命名規則 `\\.\pipe\ghostty-{runtime}-ghostty-<pid>-<pid>` を探索する、E
+## 既知の問題と対筁E
+### Ghostty CP ドレイン問顁E
+**痁E��**: メチE��ージ送信後、Enter が消失しバチE��ァに反映されなぁE��E
+**対筁E*: 送信前後�Eバッファハッシュを比輁E��、E00ms 経過後も変化がなければ `\r` を最大 3 回リトライする、E
+### スラチE��ュコマンド�EオートコンプリーチE
+**痁E��**: `/help` 等�EスラチE��ュコマンドで最初�E Enter がオートコンプリートメニューに吸収される、E
+**対筁E*: `/` 始まり�EメチE��ージ検�E時、E00ms 後に 2 回目の Enter を�E動送信、E
+### TUI エージェント�E idle 検�E
 
-### 2. プロセス探索（フォールバック）
-
-Windows ToolHelp32 API で `ghostty.exe` を列挙し、既知のパイプ命名規則 `\\.\pipe\ghostty-{runtime}-ghostty-<pid>-<pid>` を探索する。
-
-## 既知の問題と対策
-
-### Ghostty CP ドレイン問題
-
-**症状**: メッセージ送信後、Enter が消失しバッファに反映されない。
-
-**対策**: 送信前後のバッファハッシュを比較し、300ms 経過後も変化がなければ `\r` を最大 3 回リトライする。
-
-### スラッシュコマンドのオートコンプリート
-
-**症状**: `/help` 等のスラッシュコマンドで最初の Enter がオートコンプリートメニューに吸収される。
-
-**対策**: `/` 始まりのメッセージ検出時、300ms 後に 2 回目の Enter を自動送信。
-
-### TUI エージェントの idle 検出
-
-**症状**: Claude Code 等の TUI エージェントはカーソル点滅やステータスバー更新で常にバッファが変化し、`idle` 状態に安定しない。
-
-**対策**: `launch` では `idle` を待たず、エージェント固有の Ready 文字列（`>`, `›`）の出現のみで準備完了を判定。
-
-### RAW_INPUT 非対応
-
-**症状**: 古い Ghostty ビルドが `RAW_INPUT` コマンドを認識しない。
-
-**対策**: `PARSE_ERROR` 応答時に `INPUT`（テキストエンコード）へ自動フォールバック。
-
+**痁E��**: Claude Code 等�E TUI エージェント�Eカーソル点滁E��スチE�Eタスバ�E更新で常にバッファが変化し、`idle` 状態に安定しなぁE��E
+**対筁E*: `launch` では `idle` を征E��ず、エージェント固有�E Ready 斁E���E�E�E>`, `›`�E��E出現のみで準備完亁E��判定、E
+### RAW_INPUT 非対忁E
+**痁E��**: 古ぁEGhostty ビルドが `RAW_INPUT` コマンドを認識しなぁE��E
+**対筁E*: `PARSE_ERROR` 応答時に `INPUT`�E�テキストエンコード）へ自動フォールバック、E
 ### MSYS2 パス変換
 
-**症状**: Git Bash 上で引数のスラッシュが Windows パスに変換される（例: `/help` → `C:/Program Files/Git/help`）。
-
-**対策**: 既知のプレフィックスを検出し、元のパスに逆変換する。
-
+**痁E��**: Git Bash 上で引数のスラチE��ュぁEWindows パスに変換される（侁E `/help` ↁE`C:/Program Files/Git/help`�E�、E
+**対筁E*: 既知のプレフィチE��スを検�Eし、�Eのパスに送E��換する、E
 ### Ghostty -e オプション
 
-**症状**: `ghostty -e <cmd>` がデバッグビルドで IO スレッドエラーを起こす。
-
-**対策**: Ghostty を引数なしで起動し、シェルプロンプト出現後にコマンドを pipe 経由で入力する。
-
+**痁E��**: `ghostty -e <cmd>` がデバッグビルドで IO スレチE��エラーを起こす、E
+**対筁E*: Ghostty を引数なしで起動し、シェルプロンプト出現後にコマンドを pipe 経由で入力する、E
 ## IPC プロトコル
 
-Daemon は `\\.\pipe\deckpilot-daemon` で以下のコマンドを受け付ける:
+Daemon は `\\.\pipe\deckpilot-daemon` で以下�Eコマンドを受け付けめE
 
-| コマンド | 形式 | 応答 |
+| コマンチE| 形弁E| 応筁E|
 |---------|------|------|
 | PING | `PING` | `PONG` |
 | SEND | `SEND\|<name>\|<base64msg>\|<caller>` | `OK\|ack\|<id>` or `OK\|sent\|no_ack` |
@@ -234,7 +211,7 @@ The daemon exposes a WebSocket control endpoint for external agents and tools.
 - **Flag**: `--ws-port <N>` (Default: 8080, `0` to disable)
 - **Protocol**: One JSON object per frame.
 
-### Commands (Client → Server)
+### Commands (Client ↁEServer)
 
 | Cmd | Fields | Description |
 |-----|--------|-------------|
@@ -244,7 +221,7 @@ The daemon exposes a WebSocket control endpoint for external agents and tools.
 | `LIST` | (none) | List active sessions |
 | `PING` | (none) | Connection heartbeat |
 
-### Responses (Server → Client)
+### Responses (Server ↁEClient)
 
 Always returns a JSON object with `cmd`, `ok` (bool), and payload.
 
@@ -269,3 +246,41 @@ Example `INPUT` error:
 ## License
 
 MIT
+
+## Hang Detection & Recovery (Issue #26)
+
+Deckpilot uses a **decoupled monitoring architecture**. The daemon manages infrastructure, while hang-detect runs as a separate process to enforce specific health policies per session.
+
+### Non-destructive Recovery Workflow
+
+1.  **Monitor**: Start a monitor for a critical session.
+    `powershell
+    deckpilot hang-detect <session> --on-hang tiered-recover
+    `
+2.  **Detection**: If the session hangs (OS-level or heuristic), it captures a snapshot to ~/.deckpilot/hang-dumps/.
+3.  **Interaction**: It prompts the user Suggesting recovery: launch a new Ghostty session? (y/N): .
+4.  **Revival**: Upon y, it spawns a fresh Ghostty window, allowing the operator to resume work while keeping the hung process for post-mortem analysis.
+
+### Available Actions
+- 
+otify: Log to stderr and fire idle hooks.
+- snapshot: Dump PTY buffer to disk (Evidence preservation).
+- ctrl-c: Send SIGINT to the agent (Soft recovery).
+- 
+ecover: Snapshot + User confirmation to spawn a new Ghostty.
+- 	iered-recover: Notify + Snapshot + Recover.
+
+### Maintenance & Cleanup Policy
+
+Hang dumps are stored in ~/.deckpilot/hang-dumps/. To prevent disk bloat while preserving fresh evidence:
+
+- **Default Policy**: We recommend a **3-day retention period**. Most hang causes are investigated immediately; older logs are likely stale.
+- **Manual Cleanup**:
+  `powershell
+  # Delete dumps older than 3 days (default)
+  deckpilot cleanup
+  
+  # Keep logs for a week if you're on a long-running task
+  deckpilot cleanup --days 7
+  `
+- **Auto-Cleanup Recommendation**: Add deckpilot cleanup to your shell profile or a daily cron/scheduled task to keep the dump folder tidy.

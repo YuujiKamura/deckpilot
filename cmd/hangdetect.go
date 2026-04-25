@@ -1,4 +1,4 @@
-// Package cmd — `deckpilot hang-detect` CLI entry point (issue #26).
+// Package cmd  E`deckpilot hang-detect` CLI entry point (issue #26).
 //
 // Wires a HangDetector to one session. Designed to be run alongside
 // `deckpilot auto-approvals` or by itself when external monitoring is
@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -49,10 +50,10 @@ type hangDetectSessionEntry struct {
 //	--stall-seconds N     seconds of unchanged buffer (default 60)
 //	--probe-interval DUR  gap between probes (default 5s)
 //	--sample-interval DUR CPU sample window (default 500ms, must be < probe)
-//	--on-hang ACTION      notify | snapshot | ctrl-c | tiered (default notify)
-//	                      tiered = notify → snapshot → ctrl-c in sequence.
+//	--on-hang ACTION      notify | snapshot | ctrl-c | tiered (default snapshot (recommended for evidence))
+//	                      tiered = notify ↁEsnapshot ↁEctrl-c in sequence.
 //	                      Destructive actions (kill) are intentionally
-//	                      NOT exposed — see issue #26 addendum.
+//	                      NOT exposed  Esee issue #26 addendum.
 //	--include-children    default true; --no-include-children to disable
 //	--once                run one probe and exit (diagnostic)
 func HangDetect(args []string) {
@@ -61,7 +62,7 @@ func HangDetect(args []string) {
 	stallSeconds := 60 * time.Second
 	probeInterval := 5 * time.Second
 	sampleInterval := 500 * time.Millisecond
-	onHang := "notify"
+	onHang := "snapshot"
 	includeChildren := true
 	runOnce := false
 
@@ -179,7 +180,7 @@ func HangDetect(args []string) {
 		sessionName, rootPID, cpuThreshold, stallSeconds, onHang)
 
 	if runOnce {
-		// One probe and exit — useful for diagnostics / smoke tests.
+		// One probe and exit  Euseful for diagnostics / smoke tests.
 		ctx, cancel := context.WithTimeout(context.Background(),
 			probeInterval+sampleInterval+time.Second)
 		defer cancel()
@@ -209,7 +210,7 @@ func hangUsageFatal(format string, a ...any) {
 	fmt.Fprintln(os.Stderr,
 		"usage: deckpilot hang-detect <session> [--cpu-threshold N] [--stall-seconds N] "+
 			"[--probe-interval DUR] [--sample-interval DUR] "+
-			"[--on-hang notify|snapshot|ctrl-c|tiered] "+
+			"[--on-hang notify|snapshot|ctrl-c|recover|tiered|tiered-recover] "+
 			"[--include-children | --no-include-children] [--once]")
 	os.Exit(1)
 }
@@ -293,7 +294,7 @@ func fetchSessionStatus(sessionName string) string {
 
 // fetchLastAct reads the session's last-act timestamp. When the daemon
 // does not expose it explicitly (older protocol), we fall back to
-// time.Now() so the stall clock starts fresh — the CPU-idle check alone
+// time.Now() so the stall clock starts fresh  Ethe CPU-idle check alone
 // still prevents the detector from firing falsely on a busy process.
 func fetchLastAct(sessionName string) time.Time {
 	// The current SHOW protocol does not return last-act, so for now
@@ -312,15 +313,15 @@ func fetchLastAct(sessionName string) time.Time {
 // state the operator could have inspected manually. The only actions
 // exposed here are strictly non-destructive:
 //
-//	notify   — Lv1: log + supervisor ping
-//	snapshot — Lv2: dump PTY tail to ~/.deckpilot/hang-dumps/
-//	ctrl-c   — Lv3: soft interrupt, agent may recover on its own
-//	tiered   — runs notify + snapshot + ctrl-c in sequence so the
+//	notify    ELv1: log + supervisor ping
+//	snapshot  ELv2: dump PTY tail to ~/.deckpilot/hang-dumps/
+//	ctrl-c    ELv3: soft interrupt, agent may recover on its own
+//	tiered    Eruns notify + snapshot + ctrl-c in sequence so the
 //	           evidence is preserved before the interrupt might
 //	           change screen state
 //
 // If an operator truly needs to terminate the process, `Stop-Process`
-// is one shell invocation away — automating that loses more than it
+// is one shell invocation away  Eautomating that loses more than it
 // gains.
 func pickHangAction(name, sessionName string) (daemon.HangAction, error) {
 	switch name {
@@ -337,7 +338,7 @@ func pickHangAction(name, sessionName string) (daemon.HangAction, error) {
 			daemon.ActionSendCtrlC(nil),
 		), nil
 	default:
-		return nil, fmt.Errorf("unknown --on-hang action %q (valid: notify, snapshot, ctrl-c, tiered)", name)
+		return nil, fmt.Errorf("unknown --on-hang action %q (valid: notify, snapshot, ctrl-c, recover, tiered, tiered-recover)", name)
 	}
 }
 
@@ -526,4 +527,27 @@ func sanitizeForFilenameCmd(s string) string {
 		return "unnamed"
 	}
 	return string(out)
+}
+
+func recoverActionForSession(sessionName string) daemon.HangAction {
+	return func(ctx context.Context, info daemon.HangInfo) error {
+		// 1. Suggest recovery
+		fmt.Fprintf(os.Stderr, "\n[hang] %s is not responding (Source=%s).\n", sessionName, info.Source)
+		fmt.Fprintf(os.Stderr, "Suggesting recovery: launch a new Ghostty session? (y/N): ")
+
+		var response string
+		fmt.Scanln(&response)
+		if strings.ToLower(strings.TrimSpace(response)) != "y" {
+			fmt.Fprintln(os.Stderr, "Recovery cancelled.")
+			return nil
+		}
+
+		// 2. Spawn
+		cwd, _ := os.Getwd()
+		if err := SpawnGhostty(cwd); err != nil {
+			return fmt.Errorf("recover: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "New session launched.\n")
+		return nil
+	}
 }
