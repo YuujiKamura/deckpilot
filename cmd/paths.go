@@ -38,6 +38,18 @@ func hangDumpsDir() string { return filepath.Join(deckpilotHomeDir(), "hang-dump
 // `deckpilot cleanup` sweeps under the launch-meta label.
 func launchMetaDir() string { return filepath.Join(deckpilotHomeDir(), "launch-meta") }
 
+// idleHooksDir is where `deckpilot notify add` persists user-configured
+// idle hooks so they survive daemon restarts (issue #31). NOT swept by
+// `deckpilot cleanup` — these are user configuration, not artefacts:
+// neither age-based GC (operator may reasonably leave a hook in place
+// for weeks) nor liveness GC (no bound session) is appropriate. The
+// daemon owns add/remove via IPC; this is the cmd-side view.
+//
+// Note: daemon/idle_hooks_persist.go has its own copy of this path
+// resolution to avoid a daemon→cmd import cycle (cmd already imports
+// daemon for IPC helpers). Keep the two implementations aligned.
+func idleHooksDir() string { return filepath.Join(deckpilotHomeDir(), "idle-hooks") }
+
 // sanitizeFilename replaces characters that Windows / POSIX
 // filesystems reject in path segments. Also collapses to "unnamed"
 // when the input would yield an empty filename.

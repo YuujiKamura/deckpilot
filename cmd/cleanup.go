@@ -19,6 +19,14 @@ import (
 // Both contain only sanitized session-name-derived filenames, so
 // blanket age-based GC is safe; nothing in either tree is intended to
 // be edited by hand.
+//
+// NOT swept here: ~/.deckpilot/idle-hooks/ (issue #31). Idle hooks
+// are user configuration registered via `deckpilot notify add`.
+// Age-based GC would silently delete hooks the operator created
+// weeks ago, and liveness GC has no bound session to key off of.
+// Lifecycle for that directory is exclusively `deckpilot notify
+// remove` (or hand-deleting files). Do NOT add idleHooksDir() to the
+// totals slice below.
 func Cleanup(args []string) {
 	maxAge := 3 * 24 * time.Hour
 	dryRun := false
