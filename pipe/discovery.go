@@ -6,8 +6,10 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -127,37 +129,80 @@ func discoverFromProcesses() ([]Session, error) {
 	if err != nil {
 		return nil, err
 	}
+	return probePIDsConcurrent(pids, probePID), nil
+}
+
+// probePIDsConcurrent runs probe against every PID in parallel and
+// returns the successful Sessions in PID-input order.
+//
+// Ping uses dialTimeout (2s) + readDeadline (5s), so a serial loop over
+// N hung processes can stall pipe.Discover for ~7s × N — long enough to
+// blow past the 10s daemon IPC handler deadline and the 15s launch
+// waitForNewSession budget. Running probes in parallel collapses
+// worst-case latency to one Ping budget regardless of N.
+func probePIDsConcurrent(pids []int, probe func(int) (Session, bool)) []Session {
+	if len(pids) == 0 {
+		return nil
+	}
+	type result struct {
+		idx     int
+		session Session
+		ok      bool
+	}
+	results := make([]result, len(pids))
+	var wg sync.WaitGroup
+	for i, pid := range pids {
+		wg.Add(1)
+		go func(i, pid int) {
+			defer wg.Done()
+			s, ok := probe(pid)
+			results[i] = result{idx: i, session: s, ok: ok}
+		}(i, pid)
+	}
+	wg.Wait()
+
+	// Preserve PID-input order so callers / tests get deterministic output.
+	sort.SliceStable(results, func(i, j int) bool { return results[i].idx < results[j].idx })
 
 	var sessions []Session
-	for _, pid := range pids {
-		pipePath := fmt.Sprintf(`\\.\pipe\ghostty-winui3-ghostty-%d-%d`, pid, pid)
-		appRuntime := "winui3"
-		if err := Ping(pipePath); err != nil {
-			pipePath = fmt.Sprintf(`\\.\pipe\ghostty-win32-ghostty-%d-%d`, pid, pid)
-			appRuntime = "win32"
-			if err := Ping(pipePath); err != nil {
-				continue
-			}
+	for _, r := range results {
+		if r.ok {
+			sessions = append(sessions, r.session)
 		}
-		s := Session{
-			Name:       fmt.Sprintf("ghostty-%d", pid),
-			PipePath:   pipePath,
-			PID:        pid,
-			AppRuntime: appRuntime,
-		}
-		// Issue #29 fix: process-based discovery previously returned
-		// Session entries with HWND="" and SessionFile="", which meant
-		// the Watcher never knew which window to check with
-		// IsHungAppWindow — every session looked healthy even when the
-		// OS had marked it "Not Responding". Enrich from the ghostty
-		// session file (well-known path) so HWND / LogFile / etc. are
-		// populated the same way discoverFromSessionFiles() would.
-		if enriched, err := enrichFromSessionFile(s, appRuntime); err == nil {
-			s = enriched
-		}
-		sessions = append(sessions, s)
 	}
-	return sessions, nil
+	return sessions
+}
+
+// probePID resolves a single ghostty PID to a Session. Returns ok=false
+// when neither the winui3 nor win32 control-plane pipe responds within
+// the Ping budget. Safe for concurrent use.
+func probePID(pid int) (Session, bool) {
+	pipePath := fmt.Sprintf(`\\.\pipe\ghostty-winui3-ghostty-%d-%d`, pid, pid)
+	appRuntime := "winui3"
+	if err := Ping(pipePath); err != nil {
+		pipePath = fmt.Sprintf(`\\.\pipe\ghostty-win32-ghostty-%d-%d`, pid, pid)
+		appRuntime = "win32"
+		if err := Ping(pipePath); err != nil {
+			return Session{}, false
+		}
+	}
+	s := Session{
+		Name:       fmt.Sprintf("ghostty-%d", pid),
+		PipePath:   pipePath,
+		PID:        pid,
+		AppRuntime: appRuntime,
+	}
+	// Issue #29 fix: process-based discovery previously returned
+	// Session entries with HWND="" and SessionFile="", which meant
+	// the Watcher never knew which window to check with
+	// IsHungAppWindow — every session looked healthy even when the
+	// OS had marked it "Not Responding". Enrich from the ghostty
+	// session file (well-known path) so HWND / LogFile / etc. are
+	// populated the same way discoverFromSessionFiles() would.
+	if enriched, err := enrichFromSessionFile(s, appRuntime); err == nil {
+		s = enriched
+	}
+	return s, true
 }
 
 func findGhosttyPIDs() ([]int, error) {

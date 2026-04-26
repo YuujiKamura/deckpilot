@@ -210,7 +210,7 @@ func hangUsageFatal(format string, a ...any) {
 	fmt.Fprintln(os.Stderr,
 		"usage: deckpilot hang-detect <session> [--cpu-threshold N] [--stall-seconds N] "+
 			"[--probe-interval DUR] [--sample-interval DUR] "+
-			"[--on-hang notify|snapshot|ctrl-c|recover|tiered|tiered-recover] "+
+			"[--on-hang notify|snapshot|ctrl-c|tiered] "+
 			"[--include-children | --no-include-children] [--once]")
 	os.Exit(1)
 }
@@ -338,7 +338,7 @@ func pickHangAction(name, sessionName string) (daemon.HangAction, error) {
 			daemon.ActionSendCtrlC(nil),
 		), nil
 	default:
-		return nil, fmt.Errorf("unknown --on-hang action %q (valid: notify, snapshot, ctrl-c, recover, tiered, tiered-recover)", name)
+		return nil, fmt.Errorf("unknown --on-hang action %q (valid: notify, snapshot, ctrl-c, tiered)", name)
 	}
 }
 
@@ -529,25 +529,9 @@ func sanitizeForFilenameCmd(s string) string {
 	return string(out)
 }
 
-func recoverActionForSession(sessionName string) daemon.HangAction {
-	return func(ctx context.Context, info daemon.HangInfo) error {
-		// 1. Suggest recovery
-		fmt.Fprintf(os.Stderr, "\n[hang] %s is not responding (Source=%s).\n", sessionName, info.Source)
-		fmt.Fprintf(os.Stderr, "Suggesting recovery: launch a new Ghostty session? (y/N): ")
-
-		var response string
-		fmt.Scanln(&response)
-		if strings.ToLower(strings.TrimSpace(response)) != "y" {
-			fmt.Fprintln(os.Stderr, "Recovery cancelled.")
-			return nil
-		}
-
-		// 2. Spawn
-		cwd, _ := os.Getwd()
-		if err := SpawnGhostty(cwd); err != nil {
-			return fmt.Errorf("recover: %w", err)
-		}
-		fmt.Fprintf(os.Stderr, "New session launched.\n")
-		return nil
-	}
-}
+// NOTE: an interactive `recover` action that prompted via fmt.Scanln was
+// removed in commit-after-26e3cff. hang-detect runs unattended (e.g.
+// alongside auto-approvals), so a stdin prompt would block the monitor
+// indefinitely. The advertised but unwired `recover`/`tiered-recover`
+// values were dropped from the usage string and pickHangAction switch
+// in the same change.

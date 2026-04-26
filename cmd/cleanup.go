@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// Cleanup removes old hang dumps. Default age is 7 days.
+// Cleanup removes hang dumps older than --days (default 3).
 func Cleanup(args []string) {
 	maxAge := 3 * 24 * time.Hour
 	baseDir := defaultHangSnapshotBaseDir()
