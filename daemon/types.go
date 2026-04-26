@@ -8,6 +8,7 @@ package daemon
 
 // IdleHook defines an action to execute when a session becomes idle.
 type IdleHook struct {
+	ID              string            `json:"id,omitempty"`     // stable identifier; used as the on-disk filename for persistence
 	Type            string            `json:"type"`             // "http", "stdout", "send", "callback"
 	URL             string            `json:"url"`              // for "http" type
 	Method          string            `json:"method"`           // for "http" type (default: POST)

@@ -44,6 +44,15 @@ var cleanupListSessions = daemon.DaemonList
 // The 3-day retention policy in the project memory file applies to
 // hang-dumps (and any future age-based artefact dir). launch-meta is
 // a separate concept with a separate, liveness-based policy.
+//
+// NOT swept here: ~/.deckpilot/idle-hooks/ (issue #31). Idle hooks
+// are user configuration registered via `deckpilot notify add`.
+// Age-based GC would silently delete hooks the operator created
+// weeks ago, and liveness GC has no bound session to key off of
+// (session_filter is name-only and the hook is valid even before the
+// session exists). Lifecycle for that directory is exclusively
+// `deckpilot notify remove` (or hand-deleting files). Do NOT add
+// idleHooksDir() to the sweep flow below.
 func Cleanup(args []string) {
 	maxAge := 3 * 24 * time.Hour
 	dryRun := false

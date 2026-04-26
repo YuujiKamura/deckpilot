@@ -43,9 +43,13 @@ type Daemon struct {
 	WSPort      int                      // WebSocket control port (default 8080)
 }
 
-// New creates a new Daemon instance.
+// New creates a new Daemon instance. Idle hooks persisted under
+// ~/.deckpilot/idle-hooks/ are restored into the in-memory slice so
+// `deckpilot notify add ...` survives daemon restarts (issue #31).
+// Load failures are non-fatal: a missing directory returns an empty
+// slice, and individual unparseable files are skipped with a warning.
 func New() *Daemon {
-	return &Daemon{
+	d := &Daemon{
 		sessions:    make(map[string]string),
 		wsURLs:      make(map[string]string),
 		appRuntimes: make(map[string]string),
@@ -55,6 +59,11 @@ func New() *Daemon {
 		idleHooks:   make([]IdleHook, 0),
 		WSPort:      8080, // Default port
 	}
+	if loaded := loadIdleHooks(); len(loaded) > 0 {
+		d.idleHooks = loaded
+		log.Printf("daemon: restored %d idle hook(s) from %s", len(loaded), idleHooksDir())
+	}
+	return d
 }
 
 // Run starts the daemon: auto-discovers sessions, starts watchers, and
@@ -326,20 +335,40 @@ func pingDaemon() bool {
 	return string(buf[:n]) == "PONG\n"
 }
 
-// AddIdleHook adds a hook to be executed when sessions become idle
+// AddIdleHook adds a hook to be executed when sessions become idle.
+// Generates an ID if the caller didn't supply one and best-effort
+// persists the hook to ~/.deckpilot/idle-hooks/<id>.json so it
+// survives daemon restarts (issue #31). Persistence failures are
+// logged but never block the in-memory append: if the disk is
+// read-only the hook still fires for the lifetime of this daemon.
+//
+// Order: in-memory append happens first, then file write. If the
+// write fails the in-memory state is the source of truth — there is
+// no rollback. This matches the wider daemon contract that hooks live
+// in d.idleHooks at fire time.
 func (d *Daemon) AddIdleHook(hook IdleHook) {
+	if hook.ID == "" {
+		hook.ID = generateHookID()
+	}
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	d.idleHooks = append(d.idleHooks, hook)
-	log.Printf("daemon: added idle hook type=%s", hook.Type)
+	d.mu.Unlock()
+	if err := writeIdleHookFile(hook); err != nil {
+		log.Printf("daemon: idle-hook persist warning (continuing in-memory): %v", err)
+	}
+	log.Printf("daemon: added idle hook id=%s type=%s", hook.ID, hook.Type)
 }
 
-// RemoveIdleHooks removes all idle hooks
+// RemoveIdleHooks removes all idle hooks from memory and disk.
+// In-memory clear happens first; the file sweep is best-effort and
+// logs per-file failures without surfacing them — the IPC contract
+// only promises that the in-memory state has been wiped.
 func (d *Daemon) RemoveIdleHooks() {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	d.idleHooks = make([]IdleHook, 0)
-	log.Printf("daemon: removed all idle hooks")
+	d.mu.Unlock()
+	removeAllIdleHookFiles()
+	log.Printf("daemon: removed all idle hooks (memory + disk)")
 }
 
 // ListIdleHooks returns a copy of current idle hooks
@@ -363,6 +392,7 @@ func (d *Daemon) executeStatusHooks(notification BufferNotification) {
 	d.mu.Lock()
 	toFire := make([]IdleHook, 0, len(d.idleHooks))
 	remaining := make([]IdleHook, 0, len(d.idleHooks))
+	prunedIDs := make([]string, 0)
 	for _, hook := range d.idleHooks {
 		if hook.SessionFilter != "" && hook.SessionFilter != notification.SessionName {
 			remaining = append(remaining, hook)
@@ -371,6 +401,9 @@ func (d *Daemon) executeStatusHooks(notification BufferNotification) {
 		toFire = append(toFire, hook)
 		if !hook.OneTime {
 			remaining = append(remaining, hook)
+		} else {
+			// Capture IDs for sidecar-file cleanup outside the mutex.
+			prunedIDs = append(prunedIDs, hook.ID)
 		}
 	}
 	prunedOneTime := len(d.idleHooks) - len(remaining)
@@ -379,6 +412,20 @@ func (d *Daemon) executeStatusHooks(notification BufferNotification) {
 
 	if prunedOneTime > 0 {
 		log.Printf("daemon: pruned %d one-time hook(s) atomically before fire", prunedOneTime)
+		// Persistence cleanup mirrors the in-memory prune. Outside the
+		// mutex on purpose: file I/O must not block other IPC handlers,
+		// and the in-memory state has already been updated atomically
+		// so a crash between prune and unlink only leaks a stale file
+		// that loadIdleHooks will resurrect on next boot — acceptable
+		// trade for not extending mutex scope across disk I/O.
+		for _, id := range prunedIDs {
+			if id == "" {
+				continue
+			}
+			if err := removeIdleHookFile(id); err != nil {
+				log.Printf("daemon: idle-hook file cleanup warning: %v", err)
+			}
+		}
 	}
 
 	for _, hook := range toFire {
