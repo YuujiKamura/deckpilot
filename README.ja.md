@@ -88,7 +88,7 @@ codex-02    wt        active
 ### `launch` — エージェント起動
 
 ```bash
-deckpilot launch <agent> <prompt...> [--cwd DIR]
+deckpilot launch <agent> <prompt...> [--cwd DIR] [--no-meta-prompt]
 ```
 
 Ghostty ウィンドウを新規起動し、エージェントの準備完了を待ってからプロンプトを送信する。セッション名を stdout に出力するのでスクリプトから利用可能。
@@ -100,6 +100,26 @@ Ghostty ウィンドウを新規起動し、エージェントの準備完了を
 | haiku   | `claude --model haiku`                   | `>`          |
 | codex   | `codex --full-auto`                      | `›`          |
 | gemini  | `gemini`                                 | `>`          |
+
+#### Prompt 永続化と `--no-meta-prompt`
+
+既定では `deckpilot launch` は prompt を以下の 2 箇所に平文で記録する。ハングしたセッションを resume するための情報源:
+
+- `~/.deckpilot/launch-meta/<session>.json` の `prompt` フィールド (hang-detect snapshot が `# resume_command:` 行を組み立てる際に参照)
+- `~/.deckpilot/hang-dumps/<ts>-<session>.log` の `# original_prompt:` / `# resume_command:` 行 (実際にハングした時にのみ生成)
+
+両ファイルは `0o600` で書き出される。POSIX ホストでは他ユーザーから読めない設定だが、NTFS は Unix mode bit から ACL を導出しないため、Windows ではあくまで「意図表明」として機能する。共有マシンで untrusted user がいる場合はホームディレクトリ自体の Windows ACL で守ること。
+
+prompt 自体にトークン / API キー / シークレットを含めるケースでは `--no-meta-prompt` で永続化を完全に抑止できる:
+
+```bash
+deckpilot launch claude --no-meta-prompt "deploy with $TOKEN"
+```
+
+フラグ指定時の挙動:
+
+- launch-meta JSON は `"prompt": ""` と `"redacted": true` だけが残り、prompt 本文は一切ディスクに到達しない。
+- hang-dump は `# original_prompt: <redacted>` を出力し、`# resume_command:` の prompt 引数は `<REDACTED — supply manually>` という placeholder に置換される。operator は再起動時に手で prompt を入れ直す必要がある。
 
 ### `watch` — セッション監視（表示専用）
 

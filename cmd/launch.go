@@ -14,16 +14,68 @@ import (
 	"github.com/YuujiKamura/deckpilot/daemon"
 )
 
+// LaunchArgs is the parsed result of `deckpilot launch ...` flags. The
+// fields are deliberately concrete (not a flag.FlagSet) so tests can
+// exercise the parser without poking at the global flag state and so
+// the calling Launch can keep its existing fmt.Fprintln error
+// reporting style.
+type LaunchArgs struct {
+	AgentName    string
+	Prompt       string
+	Cwd          string
+	NoMetaPrompt bool
+}
+
+// ParseLaunchArgs is the args parser carved out of Launch so tests can
+// pin the --no-meta-prompt / --cwd / prompt-collection rules without
+// going through os.Exit. Returns (parsed, "") on success, or
+// (zero, error message) on a usage error. The caller decides whether
+// to write the error to stderr and exit.
+//
+// args is the slice after the subcommand name (i.e. `launch <agent>
+// <prompt...>` minus the `launch` token).
+func ParseLaunchArgs(args []string, defaultCwd string) (LaunchArgs, string) {
+	if len(args) < 1 {
+		return LaunchArgs{}, "usage: deckpilot launch <agent> <prompt...> [--cwd DIR] [--no-meta-prompt]"
+	}
+	out := LaunchArgs{
+		AgentName: args[0],
+		Cwd:       defaultCwd,
+	}
+	var promptParts []string
+	for i := 1; i < len(args); i++ {
+		switch args[i] {
+		case "--cwd":
+			if i+1 >= len(args) {
+				return LaunchArgs{}, "--cwd requires a value"
+			}
+			out.Cwd = args[i+1]
+			i++
+		case "--no-meta-prompt":
+			out.NoMetaPrompt = true
+		default:
+			promptParts = append(promptParts, args[i])
+		}
+	}
+	out.Prompt = strings.Join(promptParts, " ")
+	if out.Prompt == "" {
+		return LaunchArgs{}, "usage: deckpilot launch <agent> <prompt...> [--cwd DIR] [--no-meta-prompt]"
+	}
+	return out, ""
+}
+
 // Launch starts a Ghostty window running the specified agent, waits for the
 // session to appear, handles trust confirmation, waits for ready, and sends
 // the prompt. Prints the session name on success.
 func Launch(args []string) {
-	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: deckpilot launch <agent> <prompt...> [--cwd DIR]")
+	cwdDefault, _ := os.Getwd()
+	parsed, errMsg := ParseLaunchArgs(args, cwdDefault)
+	if errMsg != "" {
+		fmt.Fprintln(os.Stderr, errMsg)
 		os.Exit(1)
 	}
 
-	agentName := args[0]
+	agentName := parsed.AgentName
 	agent, ok := agents[agentName]
 	if !ok {
 		names := make([]string, 0, len(agents))
@@ -34,18 +86,9 @@ func Launch(args []string) {
 		os.Exit(1)
 	}
 
-	// Parse --cwd flag and collect prompt
-	cwd, _ := os.Getwd()
-	var promptParts []string
-	for i := 1; i < len(args); i++ {
-		if args[i] == "--cwd" && i+1 < len(args) {
-			cwd = args[i+1]
-			i++
-		} else {
-			promptParts = append(promptParts, args[i])
-		}
-	}
-	prompt := strings.Join(promptParts, " ")
+	cwd := parsed.Cwd
+	prompt := parsed.Prompt
+	noMetaPrompt := parsed.NoMetaPrompt
 
 	if err := daemon.EnsureRunning(); err != nil {
 		fmt.Fprintf(os.Stderr, "daemon: %v\n", err)
@@ -101,6 +144,7 @@ func Launch(args []string) {
 		Agent:       agentName,
 		Cwd:         cwd,
 		Prompt:      prompt,
+		Redacted:    noMetaPrompt,
 	}); metaErr != nil {
 		fmt.Fprintf(os.Stderr, "launch-meta: %v (continuing)\n", metaErr)
 	}

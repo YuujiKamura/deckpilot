@@ -19,13 +19,26 @@ import (
 // daemon's session map is in-memory) and avoids widening the IPC
 // surface. A missing file is treated as "session was not started by
 // deckpilot launch" — snapshot v2 falls back to the inferred agent.
+//
+// When Redacted is true the Prompt field is intentionally blanked
+// before persistence so any tokens / API keys the operator pasted
+// never hit disk. The snapshot path uses the flag to swap the
+// `# original_prompt:` and `# resume_command:` lines for
+// operator-supplied placeholders.
 type LaunchMeta struct {
 	SessionName string    `json:"session_name"`
 	Agent       string    `json:"agent"`
 	Cwd         string    `json:"cwd"`
 	Prompt      string    `json:"prompt"`
 	LaunchedAt  time.Time `json:"launched_at"`
+	Redacted    bool      `json:"redacted,omitempty"`
 }
+
+// RedactedPromptPlaceholder is the literal string snapshot v2 emits
+// in place of the captured prompt when the launch was redacted. Kept
+// as a constant so tests and the snapshot path stay in lockstep with
+// any future wording change.
+const RedactedPromptPlaceholder = "<REDACTED — supply manually>"
 
 func launchMetaPath(sessionName string) string {
 	return filepath.Join(launchMetaDir(), sanitizeFilename(sessionName)+".json")
@@ -39,6 +52,14 @@ func WriteLaunchMeta(meta LaunchMeta) error {
 	if meta.LaunchedAt.IsZero() {
 		meta.LaunchedAt = deckpilotNow()
 	}
+	// Strip the prompt unconditionally when redacted so an operator
+	// inspecting the JSON sees nothing sensitive — even reading back
+	// the meta later (ReadLaunchMeta) yields an empty Prompt and the
+	// Redacted=true flag, which is enough for snapshot v2 to swap
+	// in the placeholder.
+	if meta.Redacted {
+		meta.Prompt = ""
+	}
 	dir := launchMetaDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("launch-meta mkdir: %w", err)
@@ -48,7 +69,12 @@ func WriteLaunchMeta(meta LaunchMeta) error {
 		return fmt.Errorf("launch-meta marshal: %w", err)
 	}
 	path := launchMetaPath(meta.SessionName)
-	if err := os.WriteFile(path, body, 0o644); err != nil {
+	// 0o600: the file may carry the prompt verbatim (when not
+	// --no-meta-prompt) plus cwd / agent tied to the operator's
+	// session. POSIX hosts get the obvious narrowing; on NTFS this
+	// is mostly an intent marker because Windows ACLs are not
+	// derived from the Unix mode bits — see issue #30.
+	if err := os.WriteFile(path, body, 0o600); err != nil {
 		return fmt.Errorf("launch-meta write %s: %w", path, err)
 	}
 	return nil
