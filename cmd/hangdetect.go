@@ -25,8 +25,6 @@ import (
 var (
 	hangDetectDaemonList = daemon.DaemonList
 	hangDetectPipeTail   = pipe.Tail
-	hangDetectUserHome   = os.UserHomeDir
-	hangDetectNow        = time.Now
 
 	hangDetectDaemonListWithContext  = daemonListWithContext
 	hangDetectPipeTailWithContext    = tailPipeWithContext
@@ -347,7 +345,7 @@ func pickHangAction(name, sessionName string) (daemon.HangAction, error) {
 }
 
 func snapshotActionForSession(sessionName string) daemon.HangAction {
-	baseDir := defaultHangSnapshotBaseDir()
+	baseDir := hangDumpsDir()
 	const tailLines = 200
 
 	return func(ctx context.Context, info daemon.HangInfo) error {
@@ -357,11 +355,11 @@ func snapshotActionForSession(sessionName string) daemon.HangAction {
 
 		ts := info.DetectedAt
 		if ts.IsZero() {
-			ts = hangDetectNow()
+			ts = deckpilotNow()
 		}
 		filename := fmt.Sprintf("%s-%s.log",
 			ts.Format("20060102-150405"),
-			sanitizeForFilenameCmd(info.SessionName))
+			sanitizeFilename(info.SessionName))
 		path := filepath.Join(baseDir, filename)
 
 		// Pull the session's daemon-side metadata so the dump records
@@ -602,30 +600,6 @@ func connectionDeadline(ctx context.Context) time.Time {
 		return deadline
 	}
 	return time.Now().Add(hangDetectActionTimeout)
-}
-
-func defaultHangSnapshotBaseDir() string {
-	home, err := hangDetectUserHome()
-	if err == nil {
-		return filepath.Join(home, ".deckpilot", "hang-dumps")
-	}
-	return filepath.Join(os.TempDir(), "deckpilot-hang-dumps")
-}
-
-func sanitizeForFilenameCmd(s string) string {
-	out := make([]rune, 0, len(s))
-	for _, r := range s {
-		switch r {
-		case '/', '\\', ':', '*', '?', '"', '<', '>', '|', '\x00':
-			out = append(out, '_')
-		default:
-			out = append(out, r)
-		}
-	}
-	if len(out) == 0 {
-		return "unnamed"
-	}
-	return string(out)
 }
 
 // NOTE: an interactive `recover` action that prompted via fmt.Scanln was
