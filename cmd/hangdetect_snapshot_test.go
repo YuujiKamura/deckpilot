@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -253,6 +254,101 @@ func TestSnapshotActionForSession_V2NoLaunchMetaShowsExternalMarker(t *testing.T
 	}
 	if strings.Contains(string(text), "resume_command:") {
 		t.Errorf("must not synthesize a resume_command without launch-meta:\n%s", text)
+	}
+}
+
+// TestSnapshotActionForSession_V2RedactedMetaScrubsPromptAndResume is
+// the issue #30 stage-2 contract on the snapshot side: when the
+// launch-meta carries Redacted=true, the dump must NOT echo the
+// original prompt anywhere, and the resume_command must use the
+// operator-supplied placeholder so a copy-paste replay forces a
+// human to retype the secret.
+func TestSnapshotActionForSession_V2RedactedMetaScrubsPromptAndResume(t *testing.T) {
+	r := newSnapshotRig(t)
+
+	secret := "sk-ultra-secret-token-9999"
+	if err := WriteLaunchMeta(LaunchMeta{
+		SessionName: "ghostty-redact",
+		Agent:       "claude",
+		Cwd:         `C:\Users\yuuji\work`,
+		Prompt:      secret, // Will be scrubbed by WriteLaunchMeta.
+		Redacted:    true,
+		LaunchedAt:  time.Date(2026, 4, 26, 17, 30, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("seed meta: %v", err)
+	}
+
+	hangDetectDaemonListWithContext = func(context.Context) (string, error) {
+		return `[{"name":"ghostty-redact","pid":1,"pipe_path":"p","app_runtime":"winui3","status":"stalled","uptime":"5m"}]`, nil
+	}
+	hangDetectPipeTailWithContext = func(context.Context, string, int) (string, error) {
+		return "tail body\n", nil
+	}
+	hangDetectPipeHistoryWithContext = func(context.Context, string) (string, error) {
+		return "Welcome to Claude\n", nil
+	}
+
+	info := daemon.HangInfo{SessionName: "ghostty-redact", RootPID: 1}
+	if err := snapshotActionForSession("ghostty-redact")(context.Background(), info); err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	body, err := os.ReadFile(r.dumpPath("ghostty-redact"))
+	if err != nil {
+		t.Fatalf("read dump: %v", err)
+	}
+	text := string(body)
+
+	if strings.Contains(text, secret) {
+		t.Fatalf("redacted dump leaked the secret prompt:\n%s", text)
+	}
+	for _, want := range []string{
+		"# launched_agent: claude",
+		`# launched_cwd: C:\Users\yuuji\work`,
+		"# original_prompt: <redacted>",
+		// resume_command must include the placeholder, not the
+		// real prompt — the operator has to re-supply it.
+		`# resume_command: deckpilot launch claude "` + RedactedPromptPlaceholder + `" --cwd "C:\Users\yuuji\work"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("dump missing %q\nfull dump:\n%s", want, text)
+		}
+	}
+}
+
+// TestSnapshotActionForSession_FileMode pins issue #30 stage-1 on the
+// hang-dump side: the snapshot file is created with 0o600 so the
+// embedded prompt + history is not world-readable. Same Windows caveat
+// as the launch-meta sibling test.
+func TestSnapshotActionForSession_FileMode(t *testing.T) {
+	r := newSnapshotRig(t)
+
+	hangDetectDaemonListWithContext = func(context.Context) (string, error) {
+		return `[{"name":"ghostty-mode","pid":1,"pipe_path":"p","app_runtime":"win32","status":"idle","uptime":"1m"}]`, nil
+	}
+	hangDetectPipeTailWithContext = func(context.Context, string, int) (string, error) {
+		return "tail\n", nil
+	}
+	hangDetectPipeHistoryWithContext = func(context.Context, string) (string, error) {
+		return "", nil
+	}
+
+	info := daemon.HangInfo{SessionName: "ghostty-mode", RootPID: 1}
+	if err := snapshotActionForSession("ghostty-mode")(context.Background(), info); err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	info2, err := os.Stat(r.dumpPath("ghostty-mode"))
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	perm := info2.Mode().Perm()
+	if runtime.GOOS == "windows" {
+		if perm&0o400 == 0 {
+			t.Errorf("dump should be owner-readable on Windows; got %o", perm)
+		}
+	} else {
+		if perm != 0o600 {
+			t.Errorf("expected dump mode 0o600, got %o", perm)
+		}
 	}
 }
 

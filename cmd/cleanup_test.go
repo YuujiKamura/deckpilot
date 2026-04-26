@@ -1,94 +1,210 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
 
-// TestCleanup_SweepsBothDirectoriesByAge pins the 3-day retention
-// policy across hang-dumps and launch-meta. Files older than the
-// threshold are removed; recent files survive.
-func TestCleanup_SweepsBothDirectoriesByAge(t *testing.T) {
-	tempHome := t.TempDir()
+// withCleanupSeams installs all four seams (home, clock, daemon LIST)
+// and restores them on test cleanup. Centralizes the boilerplate so
+// individual tests stay focused on the policy assertion.
+func withCleanupSeams(t *testing.T, tempHome string, now time.Time, listFn func() (string, error)) {
+	t.Helper()
 	oldHome := deckpilotUserHome
 	oldNow := deckpilotNow
+	oldList := cleanupListSessions
 	t.Cleanup(func() {
 		deckpilotUserHome = oldHome
 		deckpilotNow = oldNow
+		cleanupListSessions = oldList
 	})
 	deckpilotUserHome = func() (string, error) { return tempHome, nil }
-	now := time.Date(2026, 4, 26, 12, 0, 0, 0, time.UTC)
 	deckpilotNow = func() time.Time { return now }
+	cleanupListSessions = listFn
+}
 
-	// Lay down 4 files: stale + fresh in each of the two dirs.
-	for _, dir := range []string{hangDumpsDir(), launchMetaDir()} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatalf("mkdir %s: %v", dir, err)
-		}
-		stale := filepath.Join(dir, "old.log")
-		fresh := filepath.Join(dir, "new.log")
-		if err := os.WriteFile(stale, []byte("x"), 0o644); err != nil {
+// TestCleanup_HangDumpsSweptByAge pins the 3-day age-based retention
+// for hang-dumps. This is the operational-evidence directory and its
+// retention policy is age, not liveness.
+func TestCleanup_HangDumpsSweptByAge(t *testing.T) {
+	tempHome := t.TempDir()
+	now := time.Date(2026, 4, 26, 12, 0, 0, 0, time.UTC)
+	// Daemon returns empty session list — irrelevant to hang-dumps.
+	withCleanupSeams(t, tempHome, now, func() (string, error) { return "[]", nil })
+
+	dir := hangDumpsDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	stale := filepath.Join(dir, "old.log")
+	fresh := filepath.Join(dir, "new.log")
+	if err := os.WriteFile(stale, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fresh, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fiveDaysAgo := now.Add(-5 * 24 * time.Hour)
+	oneHourAgo := now.Add(-1 * time.Hour)
+	if err := os.Chtimes(stale, fiveDaysAgo, fiveDaysAgo); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(fresh, oneHourAgo, oneHourAgo); err != nil {
+		t.Fatal(err)
+	}
+
+	Cleanup(nil)
+
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("stale hang-dump should have been deleted, err=%v", err)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Errorf("fresh hang-dump must survive, err=%v", err)
+	}
+}
+
+// TestCleanup_LaunchMetaLiveSessionSurvivesAge pins the core fix for
+// issue #29: a launch-meta file for a session that the daemon
+// reports as live must NOT be deleted, regardless of how old its
+// mtime is. A 30-day-old long-running session is fully legitimate.
+func TestCleanup_LaunchMetaLiveSessionSurvivesAge(t *testing.T) {
+	tempHome := t.TempDir()
+	now := time.Date(2026, 4, 26, 12, 0, 0, 0, time.UTC)
+	// Daemon reports ghostty-X as alive.
+	withCleanupSeams(t, tempHome, now, func() (string, error) {
+		return `[{"name":"ghostty-X","pid":1234,"app_runtime":"win32","status":"running","uptime":"30d"}]`, nil
+	})
+
+	dir := launchMetaDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	live := filepath.Join(dir, "ghostty-X.json")
+	if err := os.WriteFile(live, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	thirtyDaysAgo := now.Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(live, thirtyDaysAgo, thirtyDaysAgo); err != nil {
+		t.Fatal(err)
+	}
+
+	Cleanup(nil)
+
+	if _, err := os.Stat(live); err != nil {
+		t.Errorf("live session's launch-meta must survive regardless of age, err=%v", err)
+	}
+}
+
+// TestCleanup_LaunchMetaDeadSessionDeletedRegardlessOfAge pins the
+// other half of the liveness policy: a session not in the daemon's
+// LIST must be evicted, even if its mtime is fresh.
+func TestCleanup_LaunchMetaDeadSessionDeletedRegardlessOfAge(t *testing.T) {
+	tempHome := t.TempDir()
+	now := time.Date(2026, 4, 26, 12, 0, 0, 0, time.UTC)
+	// Daemon reports only ghostty-X as alive; ghostty-DEAD is not.
+	withCleanupSeams(t, tempHome, now, func() (string, error) {
+		return `[{"name":"ghostty-X","pid":1,"app_runtime":"win32","status":"running","uptime":"1m"}]`, nil
+	})
+
+	dir := launchMetaDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dead := filepath.Join(dir, "ghostty-DEAD.json")
+	if err := os.WriteFile(dead, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Even fresh files get evicted if the session is dead.
+	oneMinAgo := now.Add(-1 * time.Minute)
+	if err := os.Chtimes(dead, oneMinAgo, oneMinAgo); err != nil {
+		t.Fatal(err)
+	}
+
+	Cleanup(nil)
+
+	if _, err := os.Stat(dead); !os.IsNotExist(err) {
+		t.Errorf("dead session's launch-meta must be deleted, err=%v", err)
+	}
+}
+
+// TestCleanup_LaunchMetaDaemonDownIsNoOp pins the conservative
+// behavior: if we cannot determine liveness, we delete nothing. A
+// transient daemon-down condition must never wipe resume metadata
+// for every live session.
+func TestCleanup_LaunchMetaDaemonDownIsNoOp(t *testing.T) {
+	tempHome := t.TempDir()
+	now := time.Date(2026, 4, 26, 12, 0, 0, 0, time.UTC)
+	withCleanupSeams(t, tempHome, now, func() (string, error) {
+		return "", fmt.Errorf("daemon: connection refused")
+	})
+
+	dir := launchMetaDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Make every file ancient — under the old age-based policy they
+	// would all be wiped. Under the new policy with daemon down, all
+	// must survive.
+	for _, name := range []string{"ghostty-A.json", "ghostty-B.json", "ghostty-C.json"} {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("{}"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(fresh, []byte("x"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		// 5 days old vs 1 hour old.
-		fiveDaysAgo := now.Add(-5 * 24 * time.Hour)
-		oneHourAgo := now.Add(-1 * time.Hour)
-		if err := os.Chtimes(stale, fiveDaysAgo, fiveDaysAgo); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Chtimes(fresh, oneHourAgo, oneHourAgo); err != nil {
+		ancient := now.Add(-30 * 24 * time.Hour)
+		if err := os.Chtimes(path, ancient, ancient); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	Cleanup(nil) // default --days 3
+	Cleanup(nil)
 
-	for _, dir := range []string{hangDumpsDir(), launchMetaDir()} {
-		if _, err := os.Stat(filepath.Join(dir, "old.log")); !os.IsNotExist(err) {
-			t.Errorf("stale file in %s should have been deleted, err=%v", dir, err)
-		}
-		if _, err := os.Stat(filepath.Join(dir, "new.log")); err != nil {
-			t.Errorf("fresh file in %s must survive, err=%v", dir, err)
+	for _, name := range []string{"ghostty-A.json", "ghostty-B.json", "ghostty-C.json"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("daemon-down must not delete %s, err=%v", name, err)
 		}
 	}
 }
 
 // TestCleanup_DryRunDeletesNothing pins that --dry-run never touches
-// the filesystem — the policy is "always reportable, never silently
-// destructive when the operator asked to see first".
+// the filesystem — neither the age-based hang-dumps sweep nor the
+// liveness-based launch-meta sweep.
 func TestCleanup_DryRunDeletesNothing(t *testing.T) {
 	tempHome := t.TempDir()
-	oldHome := deckpilotUserHome
-	oldNow := deckpilotNow
-	t.Cleanup(func() {
-		deckpilotUserHome = oldHome
-		deckpilotNow = oldNow
-	})
-	deckpilotUserHome = func() (string, error) { return tempHome, nil }
 	now := time.Date(2026, 4, 26, 12, 0, 0, 0, time.UTC)
-	deckpilotNow = func() time.Time { return now }
+	// Daemon says "no live sessions" — would normally evict
+	// everything in launch-meta, but --dry-run must hold.
+	withCleanupSeams(t, tempHome, now, func() (string, error) { return "[]", nil })
 
-	dir := hangDumpsDir()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	hdDir := hangDumpsDir()
+	lmDir := launchMetaDir()
+	if err := os.MkdirAll(hdDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	stale := filepath.Join(dir, "old.log")
-	if err := os.WriteFile(stale, []byte("x"), 0o644); err != nil {
+	if err := os.MkdirAll(lmDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chtimes(stale, now.Add(-30*24*time.Hour), now.Add(-30*24*time.Hour)); err != nil {
-		t.Fatal(err)
+	hdStale := filepath.Join(hdDir, "old.log")
+	lmDead := filepath.Join(lmDir, "ghostty-DEAD.json")
+	for _, p := range []string{hdStale, lmDead} {
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		ancient := now.Add(-30 * 24 * time.Hour)
+		if err := os.Chtimes(p, ancient, ancient); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	Cleanup([]string{"--dry-run"})
 
-	if _, err := os.Stat(stale); err != nil {
-		t.Errorf("--dry-run must not delete: %v", err)
+	if _, err := os.Stat(hdStale); err != nil {
+		t.Errorf("--dry-run must not delete hang-dump: %v", err)
+	}
+	if _, err := os.Stat(lmDead); err != nil {
+		t.Errorf("--dry-run must not delete dead launch-meta: %v", err)
 	}
 }
 
@@ -97,9 +213,8 @@ func TestCleanup_DryRunDeletesNothing(t *testing.T) {
 // on a brand-new install is the most common first call.
 func TestCleanup_MissingDirIsNoError(t *testing.T) {
 	tempHome := t.TempDir()
-	oldHome := deckpilotUserHome
-	t.Cleanup(func() { deckpilotUserHome = oldHome })
-	deckpilotUserHome = func() (string, error) { return tempHome, nil }
+	now := time.Date(2026, 4, 26, 12, 0, 0, 0, time.UTC)
+	withCleanupSeams(t, tempHome, now, func() (string, error) { return "[]", nil })
 
 	// No directories created. Should print "No ... directory" and
 	// return cleanly.
