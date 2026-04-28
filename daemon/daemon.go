@@ -40,6 +40,7 @@ type Daemon struct {
 	onNotify    func(BufferNotification) // external callback (optional)
 	lastUsed    map[string]string        // caller -> session name
 	idleHooks   []IdleHook               // hooks to execute on idle transition
+	protected   map[string]struct{}      // session name -> protected (advisory; issue #35)
 	WSPort      int                      // WebSocket control port (default 8080)
 }
 
@@ -57,11 +58,16 @@ func New() *Daemon {
 		lastNotify:  make(map[string]BufferNotification),
 		lastUsed:    make(map[string]string),
 		idleHooks:   make([]IdleHook, 0),
+		protected:   make(map[string]struct{}),
 		WSPort:      8080, // Default port
 	}
 	if loaded := loadIdleHooks(); len(loaded) > 0 {
 		d.idleHooks = loaded
 		log.Printf("daemon: restored %d idle hook(s) from %s", len(loaded), idleHooksDir())
+	}
+	if loaded := loadProtectedSessions(); len(loaded) > 0 {
+		d.protected = loaded
+		log.Printf("daemon: restored %d protected session(s) from %s", len(loaded), protectedSessionsFile())
 	}
 	return d
 }
@@ -211,12 +217,19 @@ func (d *Daemon) listSessions() []sessionInfo {
 		status := "unknown"
 		uptime := ""
 		pid := 0
+		live := false
 		if w, ok := d.watchers[name]; ok {
 			status = w.Status()
 			p := w.Profile()
 			uptime = formatUptime(time.Since(p.CreatedAt))
 			pid = p.PID
+			// Treat anything other than "dead" as live for the
+			// protected-display filter — stale entries that no longer
+			// have a real process should not advertise the ✓ flag,
+			// even if the name is still in the persisted set.
+			live = status != "dead"
 		}
+		_, isProtected := d.protected[name]
 		result = append(result, sessionInfo{
 			Name:       name,
 			PID:        pid,
@@ -225,6 +238,7 @@ func (d *Daemon) listSessions() []sessionInfo {
 			AppRuntime: d.appRuntimes[name],
 			Status:     status,
 			Uptime:     uptime,
+			Protected:  isProtected && live,
 		})
 	}
 	return result

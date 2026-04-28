@@ -8,9 +8,9 @@ import (
 	"log"
 	"net"
 	"net/url"
+	"os"
 	"strings"
 	"time"
-	"os"
 
 	"github.com/Microsoft/go-winio"
 	"github.com/YuujiKamura/deckpilot/pipe"
@@ -60,6 +60,12 @@ func (d *Daemon) handleConn(conn net.Conn) {
 		resp = d.handleHookList()
 	case "SHUTDOWN":
 		resp = d.handleShutdown()
+	case "PROTECT":
+		resp = d.handleProtect(parts)
+	case "UNPROTECT":
+		resp = d.handleUnprotect(parts)
+	case "KILL":
+		resp = d.handleKill(parts)
 	default:
 		resp = fmt.Sprintf("ERR|unknown command: %s\n", cmd)
 	}
@@ -479,15 +485,75 @@ func (d *Daemon) handleHookList() string {
 	return string(data) + "\n"
 }
 
-// handleShutdown gracefully shuts down the daemon
+// handleShutdown gracefully shuts down the daemon. Per issue #35 the
+// shutdown also fans out a kill to every live session that is NOT in
+// the protected set; protected sessions survive the daemon restart and
+// will be re-discovered next time the daemon comes back up. The kill
+// targets are snapshotted under the daemon mutex so a concurrent
+// PROTECT can't race the iteration.
 func (d *Daemon) handleShutdown() string {
 	log.Printf("daemon: shutdown requested via IPC")
+	targets := d.snapshotKillTargets()
 	go func() {
+		for _, name := range targets {
+			if err := d.killSession(name, true); err != nil {
+				// killSession only returns an error here when the
+				// process has already gone away or we couldn't open a
+				// handle — log and keep going so one stuck session
+				// doesn't block the rest of the cascade.
+				log.Printf("daemon: shutdown kill %s: %v", name, err)
+			}
+		}
 		// Give time to send response, then exit
 		time.Sleep(100 * time.Millisecond)
 		os.Exit(0)
 	}()
 	return "OK|daemon shutting down\n"
+}
+
+// handleProtect adds a session to the protected set.
+func (d *Daemon) handleProtect(parts []string) string {
+	if len(parts) < 2 || parts[1] == "" {
+		return "ERR|usage: PROTECT|<name>\n"
+	}
+	if err := d.Protect(parts[1]); err != nil {
+		return fmt.Sprintf("ERR|%v\n", err)
+	}
+	return "OK\n"
+}
+
+// handleUnprotect removes a session from the protected set.
+func (d *Daemon) handleUnprotect(parts []string) string {
+	if len(parts) < 2 || parts[1] == "" {
+		return "ERR|usage: UNPROTECT|<name>\n"
+	}
+	if err := d.Unprotect(parts[1]); err != nil {
+		return fmt.Sprintf("ERR|%v\n", err)
+	}
+	return "OK\n"
+}
+
+// handleKill terminates the named session. The third argument (force)
+// must be the literal string "true" or "false" — any other value is a
+// usage error. Protected sessions return ERR|protected: use --force
+// unless force is true.
+func (d *Daemon) handleKill(parts []string) string {
+	if len(parts) < 3 || parts[1] == "" {
+		return "ERR|usage: KILL|<name>|<force>\n"
+	}
+	force := false
+	switch parts[2] {
+	case "true":
+		force = true
+	case "false":
+		force = false
+	default:
+		return "ERR|usage: KILL|<name>|<force>\n"
+	}
+	if err := d.killSession(parts[1], force); err != nil {
+		return fmt.Sprintf("ERR|%v\n", err)
+	}
+	return "OK\n"
 }
 
 // DaemonAddIdleHook adds an idle hook via daemon IPC
@@ -553,4 +619,51 @@ func DaemonShutdown() (string, error) {
 		return "", fmt.Errorf("dial daemon: %w", err)
 	}
 	return resp, nil
+}
+
+// DaemonProtect adds the named session to the daemon's protected set
+// (issue #35). Returns nil on success, or an error string from the
+// daemon (the ERR| prefix is stripped). Calling on an already-protected
+// session is a no-op success.
+func DaemonProtect(name string) error {
+	resp, err := dialDaemon(fmt.Sprintf("PROTECT|%s", name))
+	if err != nil {
+		return fmt.Errorf("dial daemon: %w", err)
+	}
+	if strings.HasPrefix(resp, "ERR|") {
+		return fmt.Errorf("%s", strings.TrimPrefix(resp, "ERR|"))
+	}
+	return nil
+}
+
+// DaemonUnprotect removes the named session from the protected set.
+// Idempotent: unprotecting a non-protected session is a no-op success.
+func DaemonUnprotect(name string) error {
+	resp, err := dialDaemon(fmt.Sprintf("UNPROTECT|%s", name))
+	if err != nil {
+		return fmt.Errorf("dial daemon: %w", err)
+	}
+	if strings.HasPrefix(resp, "ERR|") {
+		return fmt.Errorf("%s", strings.TrimPrefix(resp, "ERR|"))
+	}
+	return nil
+}
+
+// DaemonKill terminates the named session via the daemon. If force is
+// false and the session is protected, the daemon returns
+// "protected: use --force" which surfaces here as an error so the CLI
+// can print it and exit non-zero.
+func DaemonKill(name string, force bool) error {
+	forceStr := "false"
+	if force {
+		forceStr = "true"
+	}
+	resp, err := dialDaemon(fmt.Sprintf("KILL|%s|%s", name, forceStr))
+	if err != nil {
+		return fmt.Errorf("dial daemon: %w", err)
+	}
+	if strings.HasPrefix(resp, "ERR|") {
+		return fmt.Errorf("%s", strings.TrimPrefix(resp, "ERR|"))
+	}
+	return nil
 }

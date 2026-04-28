@@ -15,6 +15,7 @@ type listEntry struct {
 	AppRuntime string `json:"app_runtime"`
 	Status     string `json:"status"`
 	Uptime     string `json:"uptime"`
+	Protected  bool   `json:"protected"`
 }
 
 // List prints all active sessions as a table.
@@ -46,8 +47,12 @@ func List(args []string) {
 		return
 	}
 
-	fmt.Printf("%-25s %-6s %-10s %-10s %s\n", "NAME", "PID", "RUNTIME", "UPTIME", "STATUS")
+	fmt.Printf("%-25s %-6s %-10s %-10s %-10s %s\n", "NAME", "PID", "RUNTIME", "UPTIME", "STATUS", "PROTECTED")
 	for _, s := range sessions {
-		fmt.Printf("%-25s %-6d %-10s %-10s %s\n", s.Name, s.PID, s.AppRuntime, s.Uptime, s.Status)
+		mark := ""
+		if s.Protected {
+			mark = "✓"
+		}
+		fmt.Printf("%-25s %-6d %-10s %-10s %-10s %s\n", s.Name, s.PID, s.AppRuntime, s.Uptime, s.Status, mark)
 	}
 }

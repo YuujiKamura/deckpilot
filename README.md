@@ -299,7 +299,34 @@ Recommended: add `deckpilot cleanup` to a daily scheduled task or shell profile.
 deckpilot shutdown
 ```
 
-Asks the singleton daemon to exit cleanly. The next deckpilot command will auto-spawn a fresh one.
+Asks the singleton daemon to exit cleanly. Sessions marked with the
+GUARD flag (see `protect` below) survive `shutdown`; everything else
+is terminated before the daemon process exits. The next deckpilot
+command auto-spawns a fresh daemon, which restores the GUARD list
+from `~/.deckpilot/protected-sessions.json`.
+
+### `protect` / `unprotect` / `kill` — session GUARD flag (issue #35)
+
+Advisory opt-in protection from cascade kill. Anyone with pipe access
+can flip the flag — there is no auth model. The intent is to prevent
+unrelated `kill` / `shutdown` invocations from sweeping a session you
+care about (e.g. a long-running handoff, an in-flight build).
+
+```bash
+deckpilot protect ghostty-35316          # mark protected
+deckpilot unprotect ghostty-35316        # clear
+deckpilot kill ghostty-35316             # rejected: protected
+deckpilot kill --force ghostty-35316     # OK (override)
+deckpilot launch claude "ready" --protect # protect on launch
+deckpilot list                           # PROTECTED column shows ✓
+```
+
+The flag is persisted at `~/.deckpilot/protected-sessions.json` and
+restored across daemon restarts. `kill` without `--force` against a
+protected session returns a non-zero exit and stderr includes
+`protected`. `shutdown` walks the live session list, fans out
+`os.Process.Kill()` to every non-protected entry, and only then
+exits the daemon.
 
 ### `version`
 

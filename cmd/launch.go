@@ -24,6 +24,7 @@ type LaunchArgs struct {
 	Prompt       string
 	Cwd          string
 	NoMetaPrompt bool
+	Protect      bool
 }
 
 // ParseLaunchArgs is the args parser carved out of Launch so tests can
@@ -53,6 +54,8 @@ func ParseLaunchArgs(args []string, defaultCwd string) (LaunchArgs, string) {
 			i++
 		case "--no-meta-prompt":
 			out.NoMetaPrompt = true
+		case "--protect":
+			out.Protect = true
 		default:
 			promptParts = append(promptParts, args[i])
 		}
@@ -181,6 +184,19 @@ func Launch(args []string) {
 		os.Exit(1)
 	}
 	fmt.Fprintf(os.Stderr, "sent: %s\n", result)
+
+	// --protect: register the session in the daemon's advisory protect
+	// set (issue #35). Synchronous so a persistence failure surfaces
+	// before the caller scripts against the printed session name. We
+	// still print the name on success: a missing protect entry is less
+	// bad than a script that can't find its session at all.
+	if parsed.Protect {
+		if err := daemon.DaemonProtect(sessionName); err != nil {
+			fmt.Fprintf(os.Stderr, "protect %s: %v\n", sessionName, err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "protected: %s\n", sessionName)
+	}
 
 	// Print session name to stdout for scripting
 	fmt.Println(sessionName)

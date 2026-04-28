@@ -30,6 +30,7 @@ type sessionInfo struct {
 	AppRuntime string `json:"app_runtime"`
 	Status     string `json:"status"`
 	Uptime     string `json:"uptime"`
+	Protected  bool   `json:"protected"`
 }
 
 // BufferNotification is emitted when a watcher detects a change or stability.

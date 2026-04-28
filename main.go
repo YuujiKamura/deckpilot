@@ -68,6 +68,21 @@ func main() {
 		cmd.Cleanup(os.Args[2:])
 	case "shutdown":
 		cmd.Shutdown()
+	case "protect":
+		if err := cmd.Protect(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			os.Exit(1)
+		}
+	case "unprotect":
+		if err := cmd.Unprotect(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			os.Exit(1)
+		}
+	case "kill":
+		if err := cmd.Kill(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			os.Exit(1)
+		}
 	case "version":
 		cmd.Version(os.Args[2:])
 	case "help", "-h", "--help":
@@ -78,6 +93,7 @@ Commands:
   show             [session] [--tail N] [--history] [--follow]  Get session buffer (detail, view-only; for approval use auto-approvals)
   list                                            List active sessions (alias: ls)
   launch           <agent> <prompt...> [--cwd D]  Start agent in new Ghostty window
+                   [--no-meta-prompt] [--protect]
   watch            [session] [--once] [--json]    Monitor sessions (view-only, no approval)
   hang-detect      <session> [--cpu-threshold N]  External non-destructive hang monitor (run alongside daemon)
                    [--stall-seconds N] [--probe-interval DUR]
@@ -89,12 +105,15 @@ Commands:
   wait-idle        <session> [--timeout=D]        Block until session becomes idle (for bg-task push notify)
                    [--poll=D]
   cleanup          [--days N] [--dry-run]         Remove hang dumps older than N days (default 3)
-  shutdown                                        Stop the daemon process
+  shutdown                                        Stop the daemon process (kills non-protected sessions)
+  protect          <session>                      Mark session as protected from cascade kill (advisory)
+  unprotect        <session>                      Remove protect flag from session
+  kill             <session> [--force]            Terminate session; rejected if protected unless --force
 
 Run 'deckpilot help' for this message.
 `)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\n\nAvailable commands: send, show, list, ls, launch, watch, hang-detect, auto-approvals, approve, notify, wait-idle, cleanup, shutdown\nRun 'deckpilot help' for usage.\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n\nAvailable commands: send, show, list, ls, launch, watch, hang-detect, auto-approvals, approve, notify, wait-idle, cleanup, shutdown, protect, unprotect, kill\nRun 'deckpilot help' for usage.\n", os.Args[1])
 		os.Exit(1)
 	}
 }
