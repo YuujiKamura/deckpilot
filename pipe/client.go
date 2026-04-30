@@ -3,7 +3,9 @@ package pipe
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -33,18 +35,31 @@ func SendRecv(pipePath, message string) (string, error) {
 		return "", fmt.Errorf("write: %w", err)
 	}
 
-	var buf bytes.Buffer
-	tmp := make([]byte, 4096)
-	for {
-		n, err := conn.Read(tmp)
-		if n > 0 {
-			buf.Write(tmp[:n])
+	// Read first response. For one-shot commands (INPUT, RAW_INPUT, PING),
+	// the response is a single line. For TAIL/HISTORY, it may be multi-line
+	// but we still get it in one read since Ghostty writes it atomically.
+	tmp := make([]byte, 65536)
+	n, _ := conn.Read(tmp)
+	resp := strings.TrimRight(string(tmp[:n]), "\r\n")
+
+	// For TAIL responses, there may be more data (content lines).
+	if strings.HasPrefix(resp, "TAIL|") {
+		// Read remaining content until EOF or timeout
+		var buf bytes.Buffer
+		buf.WriteString(string(tmp[:n]))
+		for {
+			nn, err := conn.Read(tmp)
+			if nn > 0 {
+				buf.Write(tmp[:nn])
+			}
+			if err != nil {
+				break
+			}
 		}
-		if err != nil {
-			break // EOF or timeout — done reading
-		}
+		return strings.TrimRight(buf.String(), "\r\n"), nil
 	}
-	return strings.TrimRight(buf.String(), "\r\n"), nil
+
+	return resp, nil
 }
 
 // SendKeys sends base64-encoded keystrokes via the INPUT command.
@@ -60,9 +75,30 @@ func SendKeys(pipePath, text string) error {
 	return nil
 }
 
-// SendEnter sends a carriage return keystroke.
+// SendRaw sends raw bytes via RAW_INPUT (not interpreted as text).
+// Falls back to INPUT if RAW_INPUT is not supported.
+func SendRaw(pipePath string, data []byte) error {
+	encoded := base64.StdEncoding.EncodeToString(data)
+	msg := fmt.Sprintf("RAW_INPUT|deckpilot|%s", encoded)
+	log.Printf("SendRaw: pipe=%s data=%q encoded=%s msg=%s", pipePath, data, encoded, msg)
+	resp, err := SendRecv(pipePath, msg)
+	log.Printf("SendRaw: resp=%q err=%v", resp, err)
+	if err != nil {
+		return fmt.Errorf("sendraw: %w", err)
+	}
+	if errMsg, ok := IsError(resp); ok {
+		// Fallback to INPUT if server doesn't support RAW_INPUT
+		if strings.Contains(errMsg, "PARSE_ERROR") || strings.Contains(errMsg, "unknown") {
+			return SendKeys(pipePath, string(data))
+		}
+		return fmt.Errorf("server: %s", errMsg)
+	}
+	return nil
+}
+
+// SendEnter sends a carriage return via RAW_INPUT.
 func SendEnter(pipePath string) error {
-	return SendKeys(pipePath, "\r")
+	return SendRaw(pipePath, []byte("\r"))
 }
 
 // Tail retrieves the last N lines from the terminal buffer.
