@@ -6,7 +6,6 @@ import (
 	"os"
 
 	"github.com/YuujiKamura/deckpilot/daemon"
-	"github.com/YuujiKamura/deckpilot/pipe"
 )
 
 // Status prints the status and last few lines of output for a session.
@@ -39,11 +38,7 @@ func Status(args []string) {
 			fmt.Printf("session: %s\n", s.Name)
 			fmt.Printf("status:  %s\n", s.Status)
 
-			encoded, err := daemon.DaemonOutput(name, 10)
-			if err != nil {
-				return
-			}
-			content, err := pipe.Base64Decode(encoded)
+			content, err := daemon.DaemonOutput(name, 10)
 			if err != nil {
 				return
 			}
