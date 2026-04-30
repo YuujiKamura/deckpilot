@@ -26,25 +26,22 @@ func newSnapshotRig(t *testing.T) *snapshotTestRig {
 	oldList := hangDetectDaemonListWithContext
 	oldTail := hangDetectPipeTailWithContext
 	oldHistory := hangDetectPipeHistoryWithContext
-	oldHome := hangDetectUserHome
-	oldNow := hangDetectNow
-	oldMetaHome := launchMetaUserHome
+	oldHome := deckpilotUserHome
+	oldNow := deckpilotNow
 	t.Cleanup(func() {
 		hangDetectDaemonListWithContext = oldList
 		hangDetectPipeTailWithContext = oldTail
 		hangDetectPipeHistoryWithContext = oldHistory
-		hangDetectUserHome = oldHome
-		hangDetectNow = oldNow
-		launchMetaUserHome = oldMetaHome
+		deckpilotUserHome = oldHome
+		deckpilotNow = oldNow
 	})
 
-	hangDetectUserHome = func() (string, error) { return r.tempHome, nil }
-	hangDetectNow = func() time.Time {
+	// Single home / clock seam covers hang-dumps, launch-meta, and
+	// any future per-session artefact directory.
+	deckpilotUserHome = func() (string, error) { return r.tempHome, nil }
+	deckpilotNow = func() time.Time {
 		return time.Date(2026, 4, 19, 15, 4, 5, 0, time.UTC)
 	}
-	// Snapshot reads launch-meta from the same home — keep them in
-	// sync so a test can write a meta and the dump finds it.
-	launchMetaUserHome = func() (string, error) { return r.tempHome, nil }
 	return r
 }
 

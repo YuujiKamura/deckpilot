@@ -11,19 +11,19 @@ import (
 func withMetaHome(t *testing.T) string {
 	t.Helper()
 	tempHome := t.TempDir()
-	old := launchMetaUserHome
-	t.Cleanup(func() { launchMetaUserHome = old })
-	launchMetaUserHome = func() (string, error) { return tempHome, nil }
+	old := deckpilotUserHome
+	t.Cleanup(func() { deckpilotUserHome = old })
+	deckpilotUserHome = func() (string, error) { return tempHome, nil }
 	return tempHome
 }
 
 func TestWriteLaunchMeta_PersistsAndStampsTime(t *testing.T) {
 	home := withMetaHome(t)
 
-	oldNow := launchMetaTimeNow
-	t.Cleanup(func() { launchMetaTimeNow = oldNow })
+	oldNow := deckpilotNow
+	t.Cleanup(func() { deckpilotNow = oldNow })
 	fixed := time.Date(2026, 4, 26, 18, 0, 0, 0, time.UTC)
-	launchMetaTimeNow = func() time.Time { return fixed }
+	deckpilotNow = func() time.Time { return fixed }
 
 	meta := LaunchMeta{
 		SessionName: "ghostty-7064",

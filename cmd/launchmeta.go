@@ -27,23 +27,8 @@ type LaunchMeta struct {
 	LaunchedAt  time.Time `json:"launched_at"`
 }
 
-// launchMetaTimeNow is overridable so tests get deterministic timestamps.
-var launchMetaTimeNow = time.Now
-
-// launchMetaUserHome mirrors the seam used elsewhere in cmd/ so tests
-// can redirect HOME without touching the process env.
-var launchMetaUserHome = os.UserHomeDir
-
-func launchMetaDir() string {
-	home, err := launchMetaUserHome()
-	if err == nil {
-		return filepath.Join(home, ".deckpilot", "launch-meta")
-	}
-	return filepath.Join(os.TempDir(), "deckpilot-launch-meta")
-}
-
 func launchMetaPath(sessionName string) string {
-	return filepath.Join(launchMetaDir(), sanitizeForFilenameCmd(sessionName)+".json")
+	return filepath.Join(launchMetaDir(), sanitizeFilename(sessionName)+".json")
 }
 
 // WriteLaunchMeta persists meta for sessionName. Returns an error so
@@ -52,7 +37,7 @@ func launchMetaPath(sessionName string) string {
 // fatal one — the caller decides whether to abort).
 func WriteLaunchMeta(meta LaunchMeta) error {
 	if meta.LaunchedAt.IsZero() {
-		meta.LaunchedAt = launchMetaTimeNow()
+		meta.LaunchedAt = deckpilotNow()
 	}
 	dir := launchMetaDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
