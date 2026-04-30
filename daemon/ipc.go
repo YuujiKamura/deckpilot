@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/Microsoft/go-winio"
-	"github.com/YuujiKamura/deckpilot/pipe"
 )
 
 // handleConn reads one line from the connection, dispatches the command,
@@ -65,21 +64,17 @@ func (d *Daemon) handleSend(parts []string) string {
 	}
 	msg := string(msgBytes)
 
-	pipePath, ok := d.resolvePipePath(name)
+	w, ok := d.getWatcher(name)
 	if !ok {
-		// Try refreshing sessions before giving up.
 		d.refreshSessions()
-		pipePath, ok = d.resolvePipePath(name)
+		w, ok = d.getWatcher(name)
 		if !ok {
 			return fmt.Sprintf("ERR|session not found: %s\n", name)
 		}
 	}
 
-	if err := pipe.SendKeys(pipePath, msg); err != nil {
-		return fmt.Sprintf("ERR|sendkeys: %v\n", err)
-	}
-	if err := pipe.SendEnter(pipePath); err != nil {
-		return fmt.Sprintf("ERR|sendenter: %v\n", err)
+	if err := w.Send(msg); err != nil {
+		return fmt.Sprintf("ERR|send: %v\n", err)
 	}
 	return "OK|sent\n"
 }
@@ -101,27 +96,14 @@ func (d *Daemon) handleOutput(parts []string) string {
 		return "ERR|usage: OUTPUT|<name>|<lines>\n"
 	}
 	name := parts[1]
-	// lines parameter ignored — watcher caches last TAIL|50
 
-	// Use watcher cache first (no extra pipe hit)
-	if w, ok := d.getWatcher(name); ok {
-		content := w.LastContent()
-		if content != "" {
-			encoded := base64.StdEncoding.EncodeToString([]byte(content))
-			return fmt.Sprintf("OK|%s\n", encoded)
-		}
-	}
-
-	// Fallback: direct pipe call
-	pipePath, ok := d.resolvePipePath(name)
+	w, ok := d.getWatcher(name)
 	if !ok {
 		return fmt.Sprintf("ERR|session not found: %s\n", name)
 	}
 
-	content, err := pipe.Tail(pipePath, 50)
-	if err != nil {
-		return fmt.Sprintf("ERR|tail: %v\n", err)
-	}
+	// Use watcher cache — no extra pipe hit
+	content := w.LastContent()
 	encoded := base64.StdEncoding.EncodeToString([]byte(content))
 	return fmt.Sprintf("OK|%s\n", encoded)
 }
@@ -132,12 +114,12 @@ func (d *Daemon) handleHistory(parts []string) string {
 	}
 	name := parts[1]
 
-	pipePath, ok := d.resolvePipePath(name)
+	w, ok := d.getWatcher(name)
 	if !ok {
 		return fmt.Sprintf("ERR|session not found: %s\n", name)
 	}
 
-	content, err := pipe.History(pipePath)
+	content, err := w.FreshHistory()
 	if err != nil {
 		return fmt.Sprintf("ERR|history: %v\n", err)
 	}
