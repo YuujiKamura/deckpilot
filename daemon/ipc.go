@@ -219,7 +219,17 @@ func (d *Daemon) handleShow(parts []string) string {
 	case "history":
 		content, err = w.FreshHistory()
 		if err != nil {
-			return fmt.Sprintf("ERR|history: %v\n", err)
+			// Fallback to direct pipe access
+			if pipePath, pipeOk := d.resolvePipePath(name); pipeOk {
+				if direct, directErr := pipe.History(pipePath); directErr == nil && direct != "" {
+					content = direct
+					log.Printf("handleShow: recovered history via direct pipe.History for %s", name)
+					err = nil
+				}
+			}
+			if err != nil {
+				return fmt.Sprintf("ERR|history: %v\n", err)
+			}
 		}
 	default:
 		content, err = w.FreshTail(50)
