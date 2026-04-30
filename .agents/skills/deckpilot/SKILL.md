@@ -1,109 +1,65 @@
 ---
 name: deckpilot
-description: deckpilotでGhostty/WinUI3上のAIセッションを操作する。(1) list/show/send/watch/launch の実行、(2) 自分のセッションと別セッションの識別、(3) Codex間の伝言・往復対話、(4) 相手エージェントに deckpilot 越しでこのセッションへ返答させる、(5) submit_unconfirmed 等の送信失敗切り分け。deckpilot、デックパイロット、watch、show、send、launch、セッション、Codex同士、対話、伝言、delegate、返答、relayと言われた時に使用。
----
+description: deckpilotでGhostty/WinUI3上�EAIセチE��ョンを操作する、E1) list/show/send/watch/launch の実行、E2) 自刁E�EセチE��ョンと別セチE��ョンの識別、E3) Codex間�E伝言・往復対話、E4) 相手エージェントに deckpilot 越しでこ�EセチE��ョンへ返答させる、E5) submit_unconfirmed 等�E送信失敗�Eり�Eけ。deckpilot、デチE��パイロチE��、watch、show、send、launch、セチE��ョン、Codex同士、対話、伝言、delegate、返答、relayと言われた時に使用、E---
 
 # deckpilot
 
-`deckpilot` を使って Ghostty/WinUI3 上の AI セッションを直接操作するときに使う。
+`deckpilot` を使って Ghostty/WinUI3 上�E AI セチE��ョンを直接操作するときに使ぁE��E
+## 基本手頁E
+1. まぁE`deckpilot list` でセチE��ョン一覧を取る、E2. `deckpilot show <session>` で相手が誰か、仁Eidle ぁEactive かを確認する、E3. 送る時�E `deckpilot send <session> "<message>"` を使ぁE��E4. 承認征E��監視�E `deckpilot watch <session>` を使ぁE��E5. 新規起動が忁E��なめE`deckpilot launch <agent> <prompt...>` を使ぁE��E
+## Codex 起動時の注愁E
+- `deckpilot launch codex ...` で起動しても、そのままでは毎回承認が出て自走しなぁE��とがある、E- Codex に継続作業をさせる前に、起動直後�EセチE��ョンで approvals コマンドを打って承認モードを整える、E- 起動だけ�E功しても送信めE��査が止まる場合�E、まぁEapprovals 未設定を疑う、E
+## 自刁E�EセチE��ョンを見�Eける
 
-## 基本手順
-
-1. まず `deckpilot list` でセッション一覧を取る。
-2. `deckpilot show <session>` で相手が誰か、今 idle か active かを確認する。
-3. 送る時は `deckpilot send <session> "<message>"` を使う。
-4. 承認待ち監視は `deckpilot watch <session>` を使う。
-5. 新規起動が必要なら `deckpilot launch <agent> <prompt...>` を使う。
-
-## Codex 起動時の注意
-
-- `deckpilot launch codex ...` で起動しても、そのままでは毎回承認が出て自走しないことがある。
-- Codex に継続作業をさせる前に、起動直後のセッションで approvals コマンドを打って承認モードを整える。
-- 起動だけ成功しても送信や調査が止まる場合は、まず approvals 未設定を疑う。
-
-## 自分のセッションを見分ける
-
-- 指示を出す側は、まず「どれが自分のセッションか」を認識すること。
-- 一番確実なのは `deckpilot show <candidate>` を見て、今この会話で直前に出した文面が表示されるセッションを自分と判断する方法。
-- `deckpilot list` の `active` だけで決めない。別エージェントも active になりうる。
-- 実運用では「今この会話をしている自分のセッションID」を最初に確定し、その ID を返答先として固定する。
-
-## キャリア判定
-
-- `deckpilot list` の `RUNTIME` 列を必ず見る。
-- Ghostty 同士なら、相手自身に `deckpilot send <current-session>` を実行させる返却が成立しやすい。
-- WT が混ざる時は、その前提が壊れることがある。WT 混在時は self-return を期待せず、`show` 回収を第一候補にする。
-- つまり、返却戦略は「相手が誰か」だけでなく「Ghostty/WT のどちらか」を見て決める。
-
+- 持E��を�Eす�Eは、まず「どれが自刁E�EセチE��ョンか」を認識すること、E- 一番確実なのは `deckpilot show <candidate>` を見て、今この会話で直前に出した斁E��が表示されるセチE��ョンを�E刁E��判断する方法、E- `deckpilot list` の `active` だけで決めなぁE��別エージェントも active になりうる、E- 実運用では「今この会話をしてぁE��自刁E�EセチE��ョンID」を最初に確定し、その ID を返答�Eとして固定する、E
+## キャリア判宁E
+- `deckpilot list` の `RUNTIME` 列を忁E��見る、E- Ghostty 同士なら、相手�E身に `deckpilot send <current-session>` を実行させる返却が�E立しめE��ぁE��E- WT が混ざる時�E、その前提が壊れることがある。WT 混在時�E self-return を期征E��ず、`show` 回収を第一候補にする、E- つまり、返却戦略は「相手が誰か」だけでなく「Ghostty/WT のどちらか」を見て決める、E
 ## 最重要ルール
 
-- `ghostty-<pid>` のうち、今この会話をしている自分のセッションを別Codex扱いしない。必ず `show` の内容で相手確認をする。
-- `list` に2件見えても、「別Codex」と「自分」の組み合わせであることがある。名前だけで判断しない。
-- 「相手に調査をやらせる」ときは、結果回収を人間待ちにしない。相手自身に `deckpilot send <current-session> ...` を実行させて、このセッションへ返答させる。
-- ただし WT 混在時は self-return 前提で組まない。WT がいるなら `show` でこちらが回収する fallback を最初から含める。
-
+- `ghostty-<pid>` のぁE��、今この会話をしてぁE��自刁E�EセチE��ョンを別Codex扱ぁE��なぁE��忁E�� `show` の冁E��で相手確認をする、E- `list` に2件見えても、「別Codex」と「�E刁E���E絁E��合わせであることがある。名前だけで判断しなぁE��E- 「相手に調査をやらせる」とき�E、結果回収を人間征E��にしなぁE��相手�E身に `deckpilot send <current-session> ...` を実行させて、このセチE��ョンへ返答させる、E- ただぁEWT 混在時�E self-return 前提で絁E��なぁE��WT がいるなめE`show` でこちらが回収する fallback を最初から含める、E
 ## 標準運用
 
-### 1. こちらが中継する
-
-1. 相手セッションへ `deckpilot send` で質問を送る。
-2. `deckpilot show <session>` で返答を回収する。
-3. 必要ならその返答を別セッションへ転送する。
-
-これは最も単純で、送信経路の確認にも向く。
-
+### 1. こちらが中継すめE
+1. 相手セチE��ョンへ `deckpilot send` で質問を送る、E2. `deckpilot show <session>` で返答を回収する、E3. 忁E��ならその返答を別セチE��ョンへ転送する、E
+これは最も単純で、E��信経路の確認にも向く、E
 ### 2. 相手に deckpilot 越しで返答させる
 
-相手に仕事を投げるときは、返答方法まで含めて指示する。
-
-例:
-
-```text
-この会話相手は ghostty-31256 です。調査が終わったら、あなた自身で deckpilot を使ってこのセッションへ結果を返してください。実行形式は:
-deckpilot send ghostty-31256 "<要約>"
-中間報告ではなく、結論が出てから返してください。
-```
-
-さらに厳格にするなら、送る本文まで固定する。
+相手に仕事を投げるとき�E、返答方法まで含めて持E��する、E
+侁E
 
 ```text
-この会話相手は ghostty-31256 です。調査完了後、あなた自身で次の形式で返答してください:
-deckpilot send ghostty-31256 "結論: ... / 根拠: ..."
-```
+こ�E会話相手�E ghostty-31256 です。調査が終わったら、あなた�E身で deckpilot を使ってこ�EセチE��ョンへ結果を返してください。実行形式�E:
+deckpilot send ghostty-31256 "<要紁E"
+中間報告ではなく、結論が出てから返してください、E```
 
-これを標準にする。`show` 回収は補助であって、第一経路ではない。
-
-### 3. WT 混在時の fallback
-
-WT が混ざるときは、最初から次の方針に切り替える。
-
+さらに厳格にするなら、E��る本斁E��で固定する、E
 ```text
-WT 混在の可能性があるので、deckpilot send での自己返却は前提にしない。調査結果は画面に要約表示しろ。こちらが deckpilot show で回収する。
+こ�E会話相手�E ghostty-31256 です。調査完亁E��、あなた�E身で次の形式で返答してください:
+deckpilot send ghostty-31256 "結諁E ... / 根拠: ..."
 ```
 
-これを明示しないと、「返すつもりで返せない」状態が起きる。
+これを標準にする。`show` 回収は補助であって、第一経路ではなぁE��E
+### 3. WT 混在時�E fallback
 
-## 会話を成立させるコツ
+WT が混ざるとき�E、最初から次の方針に刁E��替える、E
+```text
+WT 混在の可能性がある�Eで、deckpilot send での自己返却は前提にしなぁE��調査結果は画面に要紁E��示しろ。こちらが deckpilot show で回収する、E```
 
-- 相手に「1行だけ」「形式厳守」と明示しないと、質問文をそのまま繰り返すことがある。
-- 形式を固定するなら `TO_B:` / `TO_A:` のように宛先付きにする。
-- 調査依頼では「調査後に deckpilot send で返せ」を必ず含める。
-- ただし WT 混在時は「deckpilot send で返せ」ではなく「show で回収するので画面に要約を出せ」と書く。
-
+これを�E示しなぁE��、「返すつもりで返せなぁE��状態が起きる、E
+## 会話を�E立させるコチE
+- 相手に、E行だけ」「形式厳守」と明示しなぁE��、質問文をそのまま繰り返すことがある、E- 形式を固定するなめE`TO_B:` / `TO_A:` のように宛�E付きにする、E- 調査依頼では「調査後に deckpilot send で返せ」を忁E��含める、E- ただぁEWT 混在時�E「deckpilot send で返せ」ではなく「show で回収するので画面に要紁E��出せ」と書く、E
 ## 失敗時の見方
 
-- `submit_ok|ok_cleared|...` は送信成功。
-- `submit_unconfirmed|timeout_after_2000ms` は submit 確認失敗。相手側の trust 画面や UI 遷移が原因のことがある。
-- `daemon did not start within 3s` は daemon 起動確認失敗。既存 daemon の状態を疑う。
-- 相手が idle なのに返答が来ない場合は、`show <session>` で未送信の結論が残っていないか確認する。
-- Codex 起動直後に毎回承認待ちになる場合は、approvals コマンド未実行の可能性が高い。
-- WT 混在時に返答が来ないのは、相手の失敗ではなく self-return 不成立の可能性がある。その場合は `show` 回収へ切り替える。
+- `submit_ok|ok_cleared|...` は送信成功、E- `submit_unconfirmed|timeout_after_2000ms` は submit 確認失敗。相手�Eの trust 画面めEUI 遷移が原因のことがある、E- `daemon did not start within 3s` は daemon 起動確認失敗。既孁Edaemon の状態を疑う、E- 相手が idle なのに返答が来なぁE��合�E、`show <session>` で未送信の結論が残ってぁE��ぁE��確認する、E- Codex 起動直後に毎回承認征E��になる場合�E、approvals コマンド未実行�E可能性が高い、E- WT 混在時に返答が来なぁE�Eは、相手�E失敗ではなぁEself-return 不�E立�E可能性がある。その場合�E `show` 回収へ刁E��替える、E
+## 実務上�E判断
 
-## 実務上の判断
+- 「単に相手に聞きたい」なら�E刁E��中継する、E- 「相手が deckpilot を使って返せるか試したぁE��なら、相手�E身に `deckpilot send` を実行させる、E- 「調査させる」なら、返答条件まで持E��してから投げる、E- そ�E前に、�E刁E�EセチE��ョンIDと相手�E `RUNTIME` を確定する、E- Ghostty 同士なめEself-return、WT 混在なめEshow 回収。この刁E��を持E��側が�Eに判断する、E- 「会話になってぁE��ぁE��と持E��されたら、まず�Eロトコル不足かセチE��ョン取り違えを疑ぁE��E
 
-- 「単に相手に聞きたい」なら自分が中継する。
-- 「相手が deckpilot を使って返せるか試したい」なら、相手自身に `deckpilot send` を実行させる。
-- 「調査させる」なら、返答条件まで指示してから投げる。
-- その前に、自分のセッションIDと相手の `RUNTIME` を確定する。
-- Ghostty 同士なら self-return、WT 混在なら show 回収。この分岐を指示側が先に判断する。
-- 「会話になっていない」と指摘されたら、まずプロトコル不足かセッション取り違えを疑う。
+## Hang Detection & Recovery Policy
+
+Deckpilot enforces a **non-destructive recovery** policy. We never kill hung sessions automatically; we preserve evidence and provide a path to resume.
+
+- **Manual Monitoring**: Use deckpilot hang-detect <session> --on-hang tiered-recover for critical tasks.
+- **Evidence First**: All recovery actions (ecover, 	iered-recover) automatically capture a buffer snapshot to ~/.deckpilot/hang-dumps/ before prompting the user.
+- **Human in the Loop**: The ecover action requires explicit user confirmation (y/N) before spawning a new window.
+- **Separation of Concerns**: The daemon does NOT monitor hangs automatically. Monitoring is a per-session opt-in process.

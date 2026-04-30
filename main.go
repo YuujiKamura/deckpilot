@@ -64,7 +64,9 @@ func main() {
 		cmd.Notify(os.Args[2:])
 	case "wait-idle":
 		cmd.WaitIdle(os.Args[2:])
-	case "shutdown":
+	case "cleanup":
+                cmd.Cleanup(os.Args[2:])
+        case "shutdown":
 		cmd.Shutdown()
 	case "version":
 		cmd.Version(os.Args[2:])
@@ -77,15 +79,16 @@ Commands:
   list                                            List active sessions (alias: ls)
   launch           <agent> <prompt...> [--cwd D]  Start agent in new Ghostty window
   watch            [session] [--once] [--json]    Monitor sessions (view-only, no approval)
-  hang-detect      <session> [--cpu-threshold N]  Non-destructive hang monitor
+  hang-detect      <session> [--cpu-threshold N]  External non-destructive hang monitor (run alongside daemon)
                    [--stall-seconds N] [--probe-interval DUR]
-                   [--on-hang notify|snapshot|ctrl-c|tiered]
+                   [--on-hang notify|snapshot|ctrl-c|recover|tiered|tiered-recover]
                    [--include-children|--no-include-children] [--once]
   auto-approvals   <session> [--interval 2s]      Auto-approve prompts (alias: approve)
                    [--dry-run] [--verbose]
   notify           add|remove|list <args>         Manage idle notification hooks
   wait-idle        <session> [--timeout=D]        Block until session becomes idle (for bg-task push notify)
                    [--poll=D]
+  cleanup          [--days N] [--dry-run]         Remove hang dumps older than N days (default 3)
   shutdown                                        Stop the daemon process
 
 Run 'deckpilot help' for this message.

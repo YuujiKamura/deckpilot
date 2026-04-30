@@ -56,7 +56,7 @@ func Launch(args []string) {
 	knownSessions := listSessionNames()
 
 	// Find and launch Ghostty
-	ghosttyExe := findGhostty()
+	ghosttyExe := FindGhostty()
 	if ghosttyExe == "" {
 		fmt.Fprintln(os.Stderr, "ghostty not found. Set GHOSTTY_EXE or install ghostty on PATH")
 		os.Exit(1)
@@ -129,7 +129,7 @@ func Launch(args []string) {
 	fmt.Println(sessionName)
 }
 
-func findGhostty() string {
+func FindGhostty() string {
 	// 1. GHOSTTY_EXE env
 	if exe := os.Getenv("GHOSTTY_EXE"); exe != "" {
 		if _, err := os.Stat(exe); err == nil {
@@ -217,7 +217,7 @@ func waitForReady(session string, agent AgentDef, timeout time.Duration) error {
 			continue
 		}
 
-		// Check for ready – once the ready string is visible, the agent
+		// Check for ready  Eonce the ready string is visible, the agent
 		// has rendered its prompt.  We don't require status=="idle" because
 		// TUI agents (Claude Code, etc.) keep updating the terminal (cursor
 		// blink, status bar) which prevents the watcher from ever settling
@@ -228,4 +228,29 @@ func waitForReady(session string, agent AgentDef, timeout time.Duration) error {
 	}
 
 	return fmt.Errorf("agent did not become ready within %v", timeout)
+}
+
+// SpawnGhostty starts a plain Ghostty window in the specified directory
+// and detaches from it immediately.
+func SpawnGhostty(cwd string) error {
+    ghosttyExe := FindGhostty()
+    if ghosttyExe == "" {
+        return fmt.Errorf("ghostty not found")
+    }
+
+    cmd := exec.Command(ghosttyExe)
+    cmd.Dir = cwd
+    cmd.Stdin = nil
+    cmd.Stdout = nil
+    cmd.Stderr = nil
+    cmd.SysProcAttr = &syscall.SysProcAttr{
+        CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP | 0x00000008, // DETACHED_PROCESS
+    }
+    if err := cmd.Start(); err != nil {
+        return err
+    }
+    if cmd.Process != nil {
+        cmd.Process.Release()
+    }
+    return nil
 }
