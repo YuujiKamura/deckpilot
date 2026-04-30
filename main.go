@@ -28,6 +28,8 @@ func main() {
 		cmd.Show(os.Args[2:])
 	case "launch":
 		cmd.Launch(os.Args[2:])
+	case "watch":
+		cmd.Watch(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
 		os.Exit(1)
