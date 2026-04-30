@@ -37,6 +37,10 @@ type hangDetectSessionEntry struct {
 	Name     string `json:"name"`
 	PID      int    `json:"pid"`
 	PipePath string `json:"pipe_path"`
+	// Status mirrors the Watcher's current status string. The watcher
+	// sets this to "stalled" when IsHungAppWindow(hwnd) is TRUE, which
+	// probeOnce consults as its OS-authoritative fast path.
+	Status string `json:"status"`
 }
 
 // HangDetect is the CLI command: deckpilot hang-detect <session> [flags]
@@ -152,6 +156,11 @@ func HangDetect(args []string) {
 		Lister:          daemon.SystemProcessLister{},
 		Sampler:         daemon.SystemCPUSampler{},
 		LastActOf:       func() time.Time { return fetchLastAct(sessionName) },
+		// Watcher already polls IsHungAppWindow and surfaces the
+		// result as session status "stalled" via DaemonList. Plumb
+		// that through so probeOnce can use the OS-authoritative
+		// signal instead of guessing from CPU + last-act.
+		WatcherStatusOf: func() string { return fetchSessionStatus(sessionName) },
 		Action:          action,
 		CPUThreshold:    cpuThreshold,
 		StallSeconds:    stallSeconds,
@@ -262,6 +271,24 @@ func listSessionsForHangDetect() ([]hangDetectSessionEntry, error) {
 		return nil, fmt.Errorf("parse list: %w", err)
 	}
 	return all, nil
+}
+
+// fetchSessionStatus returns the named session's current status string
+// from the daemon's session list ("idle", "active", "stalled",
+// "dead", etc.). On any error, returns "" so the fast path falls back
+// to the heuristic branch rather than spuriously firing. The watcher
+// maintains "stalled" as its code word for IsHungAppWindow(hwnd)==TRUE.
+func fetchSessionStatus(sessionName string) string {
+	all, err := listSessionsForHangDetect()
+	if err != nil {
+		return ""
+	}
+	for _, e := range all {
+		if e.Name == sessionName {
+			return e.Status
+		}
+	}
+	return ""
 }
 
 // fetchLastAct reads the session's last-act timestamp. When the daemon
