@@ -50,7 +50,7 @@ func (d *Daemon) Run() error {
 	log.Printf("daemon: discovered %d sessions", len(sessions))
 
 	cfg := &winio.PipeConfig{
-		SecurityDescriptor: "D:(A;;GA;;;WD)",
+		SecurityDescriptor: "D:(A;;GA;;;CO)", // Creator Owner only
 	}
 	listener, err := winio.ListenPipe(IPCPipePath(), cfg)
 	if err != nil {
@@ -134,8 +134,18 @@ func (d *Daemon) listSessions() []sessionInfo {
 	return result
 }
 
-// refreshSessions re-discovers sessions and adds any new ones.
+// refreshSessions re-discovers sessions, removes dead watchers, and adds new ones.
 func (d *Daemon) refreshSessions() {
+	// Remove dead watchers so they can be re-added
+	d.mu.Lock()
+	for name, w := range d.watchers {
+		if w.Status() == "dead" {
+			delete(d.watchers, name)
+			delete(d.sessions, name)
+		}
+	}
+	d.mu.Unlock()
+
 	sessions, err := pipe.Discover()
 	if err != nil {
 		return

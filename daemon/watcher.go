@@ -159,35 +159,56 @@ func (w *Watcher) updateContent(content string) {
 
 // Send queues a send+enter to this session's pipe goroutine.
 func (w *Watcher) Send(text string) error {
+	if w.Status() == "dead" {
+		return fmt.Errorf("session %s is dead", w.name)
+	}
 	req := pipeRequest{
 		kind:    "sendkeys",
 		payload: text,
 		result:  make(chan pipeResult, 1),
 	}
-	w.reqCh <- req
+	select {
+	case w.reqCh <- req:
+	default:
+		return fmt.Errorf("session %s request queue full", w.name)
+	}
 	res := <-req.result
 	return res.err
 }
 
 // FreshTail queues a tail request to the pipe goroutine.
 func (w *Watcher) FreshTail(lines int) (string, error) {
+	if w.Status() == "dead" {
+		return w.LastContent(), nil // return cached content
+	}
 	req := pipeRequest{
 		kind:   "tail",
 		lines:  lines,
 		result: make(chan pipeResult, 1),
 	}
-	w.reqCh <- req
+	select {
+	case w.reqCh <- req:
+	default:
+		return w.LastContent(), nil
+	}
 	res := <-req.result
 	return res.content, res.err
 }
 
 // FreshHistory queues a history request to the pipe goroutine.
 func (w *Watcher) FreshHistory() (string, error) {
+	if w.Status() == "dead" {
+		return "", fmt.Errorf("session %s is dead", w.name)
+	}
 	req := pipeRequest{
 		kind:   "history",
 		result: make(chan pipeResult, 1),
 	}
-	w.reqCh <- req
+	select {
+	case w.reqCh <- req:
+	default:
+		return "", fmt.Errorf("session %s request queue full", w.name)
+	}
 	res := <-req.result
 	return res.content, res.err
 }
