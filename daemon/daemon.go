@@ -65,24 +65,11 @@ func (d *Daemon) Run() error {
 	}
 	log.Printf("daemon: discovered %d session(s)", len(sessions))
 
-	// Periodic re-discovery of new sessions
+	// Periodic re-discovery and revival of sessions (Autonomous Heartbeat)
 	go func() {
 		for {
-			time.Sleep(30 * time.Second)
-			sessions, err := pipe.Discover()
-			if err != nil {
-				log.Printf("re-discover warning: %v", err)
-				continue
-			}
-			for _, s := range sessions {
-				d.mu.Lock()
-				_, exists := d.sessions[s.Name]
-				d.mu.Unlock()
-				if !exists {
-					d.addSession(s.Name, s.PipePath, s.WsURL, s.SessionFile, s.PID, s.AppRuntime)
-					log.Printf("daemon: re-discovered new session %q", s.Name)
-				}
-			}
+			time.Sleep(5 * time.Second)
+			d.refreshSessions()
 		}
 	}()
 
