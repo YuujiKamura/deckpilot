@@ -19,6 +19,11 @@ var agentApprovalPatterns = map[string][]string{
 		// so only use highly distinctive interactive prompts here.
 		"Y/n",
 		"(y/N)",
+		"Allow execution of",
+		"Accept",
+		"実行を許可しますか",
+		"承認",
+		"許可",
 	},
 	"codex": {
 		"Would you like to run",
@@ -40,7 +45,7 @@ func DetectApprovalPrompt(content string) (matched string, found bool) {
 	return DetectApprovalPromptForAgent(content, "claude")
 }
 
-// DetectApprovalPromptForAgent checks the last 15 lines of content for an
+// DetectApprovalPromptForAgent checks the last 30 lines of content for an
 // approval prompt pattern specific to the given agent type.
 // Unknown agent names fall back to claude patterns.
 func DetectApprovalPromptForAgent(content, agent string) (matched string, found bool) {
@@ -50,8 +55,8 @@ func DetectApprovalPromptForAgent(content, agent string) (matched string, found 
 	}
 
 	promptLines := content
-	if lines := strings.Split(content, "\n"); len(lines) > 15 {
-		promptLines = strings.Join(lines[len(lines)-15:], "\n")
+	if lines := strings.Split(content, "\n"); len(lines) > 30 {
+		promptLines = strings.Join(lines[len(lines)-30:], "\n")
 	}
 	for _, p := range patterns {
 		if strings.Contains(promptLines, p) {
@@ -62,12 +67,12 @@ func DetectApprovalPromptForAgent(content, agent string) (matched string, found 
 }
 
 // inferAgentFromBuffer tries to detect which agent is running by scanning
-// the last 30 lines of buffer output for agent-specific signatures.
+// the last 100 lines of buffer output for agent-specific signatures.
 // Returns "" when inconclusive.
 func inferAgentFromBuffer(content string) string {
 	lines := strings.Split(content, "\n")
-	if len(lines) > 30 {
-		lines = lines[len(lines)-30:]
+	if len(lines) > 100 {
+		lines = lines[len(lines)-100:]
 	}
 	tail := strings.Join(lines, "\n")
 

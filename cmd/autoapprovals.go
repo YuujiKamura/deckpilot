@@ -127,28 +127,47 @@ func AutoApprovals(args []string) {
 				if inferred := inferAgentFromBuffer(content); inferred != "" {
 					agentType = inferred
 					fmt.Fprintf(os.Stderr, "auto-approvals: detected agent=%s\n", agentType)
-				} else {
-					agentType = "claude"
-					fmt.Fprintf(os.Stderr, "auto-approvals: agent not detected, defaulting to claude\n")
 				}
 			}
 
+			// If still not detected, DetectApprovalPromptForAgent will fall back to claude
+			// for this check, but we keep agentType as "" for future detection.
 			matched, hasPrompt := DetectApprovalPromptForAgent(content, agentType)
 
 			if !hasPrompt {
 				sentEnter = false
+				entersSent = 0
 				continue
 			}
 
 			if !sentEnter {
 				ts := time.Now().Format("15:04:05")
-				if verbose {
-					fmt.Fprintf(os.Stderr, "[%s] Prompt detected (matched: %q)%s\n", ts, matched, dryTag)
-				} else {
-					fmt.Fprintf(os.Stderr, "[%s] Prompt detected, sending Enter%s\n", ts, dryTag)
+
+				// Smart response selection based on agent and pattern.
+				// Default is empty string which DaemonSend treats as Enter (\r).
+				response := ""
+				if agentType == "gemini" {
+					switch matched {
+					case "Allow execution of", "実行を許可しますか":
+						response = "1"
+					case "(y/N)":
+						response = "y"
+					}
 				}
+
+				if verbose {
+					fmt.Fprintf(os.Stderr, "[%s] Prompt detected (matched: %q, response: %q)%s\n",
+						ts, matched, response, dryTag)
+				} else {
+					respTag := "Enter"
+					if response != "" {
+						respTag = fmt.Sprintf("%q", response)
+					}
+					fmt.Fprintf(os.Stderr, "[%s] Prompt detected, sending %s%s\n", ts, respTag, dryTag)
+				}
+
 				if !dryRun {
-					if _, err := daemon.DaemonSend(sessionName, "", caller); err != nil {
+					if _, err := daemon.DaemonSend(sessionName, response, caller); err != nil {
 						fmt.Fprintf(os.Stderr, "auto-approvals: send failed: %v\n", err)
 					}
 				}

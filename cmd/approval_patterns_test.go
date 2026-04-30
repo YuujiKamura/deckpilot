@@ -6,7 +6,7 @@ import (
 )
 
 // TestDetectApprovalPrompt_Patterns verifies every claude pattern is detected when present
-// in the last 15 lines of content.
+// in the last 30 lines of content.
 func TestDetectApprovalPrompt_Patterns(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -95,35 +95,35 @@ func TestDetectApprovalPrompt_Patterns(t *testing.T) {
 	}
 }
 
-// TestDetectApprovalPrompt_Last15Lines checks the sliding-window boundary:
-// patterns beyond the last 15 lines must NOT be detected.
-func TestDetectApprovalPrompt_Last15Lines(t *testing.T) {
+// TestDetectApprovalPrompt_Last30Lines checks the sliding-window boundary:
+// patterns beyond the last 30 lines must NOT be detected.
+func TestDetectApprovalPrompt_Last30Lines(t *testing.T) {
 	var lines []string
 	lines = append(lines, "Action Required: buried far back")
-	for i := 0; i < 20; i++ {
+	for i := 0; i < 40; i++ {
 		lines = append(lines, "filler line")
 	}
 	content := strings.Join(lines, "\n")
 
 	_, found := DetectApprovalPrompt(content)
 	if found {
-		t.Error("expected no match: pattern is outside last-15-line window")
+		t.Error("expected no match: pattern is outside last-30-line window")
 	}
 }
 
-// TestDetectApprovalPrompt_ExactlyAt15thLine ensures a pattern on exactly the
-// 15th-from-last line IS detected (boundary inclusive).
-func TestDetectApprovalPrompt_ExactlyAt15thLine(t *testing.T) {
+// TestDetectApprovalPrompt_ExactlyAt30thLine ensures a pattern on exactly the
+// 30th-from-last line IS detected (boundary inclusive).
+func TestDetectApprovalPrompt_ExactlyAt30thLine(t *testing.T) {
 	var lines []string
 	lines = append(lines, "Action Required: at boundary")
-	for i := 0; i < 14; i++ {
+	for i := 0; i < 29; i++ {
 		lines = append(lines, "filler")
 	}
 	content := strings.Join(lines, "\n")
 
 	matched, found := DetectApprovalPromptForAgent(content, "claude")
 	if !found {
-		t.Error("expected match: pattern is exactly at the 15-line boundary")
+		t.Error("expected match: pattern is exactly at the 30-line boundary")
 	}
 	if matched != "Action Required" {
 		t.Errorf("matched=%q, want %q", matched, "Action Required")
@@ -131,7 +131,7 @@ func TestDetectApprovalPrompt_ExactlyAt15thLine(t *testing.T) {
 }
 
 // TestDetectApprovalPrompt_ShortContent verifies behaviour when content has
-// fewer than 15 lines (the whole content is checked).
+// fewer than 30 lines (the whole content is checked).
 func TestDetectApprovalPrompt_ShortContent(t *testing.T) {
 	content := "line1\nY/n\nline3"
 	matched, found := DetectApprovalPrompt(content)
