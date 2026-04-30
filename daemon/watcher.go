@@ -40,6 +40,7 @@ type pipeResult struct {
 type Watcher struct {
 	mu          sync.Mutex
 	name        string
+	pid         int
 	pipePath    string
 	sessionFile string
 	lastHash    string
@@ -61,9 +62,10 @@ type Watcher struct {
 }
 
 // NewWatcher creates a Watcher for the given session.
-func NewWatcher(name, pipePath, sessionFile string, onNotify func(BufferNotification)) *Watcher {
+func NewWatcher(name, pipePath, sessionFile string, pid int, onNotify func(BufferNotification)) *Watcher {
 	return &Watcher{
 		name:        name,
+		pid:         pid,
 		pipePath:    pipePath,
 		sessionFile: sessionFile,
 		status:      "active",
@@ -333,6 +335,7 @@ func (w *Watcher) LastContent() string {
 // WatcherProfile holds session profiling counters.
 type WatcherProfile struct {
 	CreatedAt   time.Time
+	PID         int
 	SendCount   int
 	ShowCount   int
 	PollSuccess int
@@ -348,6 +351,7 @@ func (w *Watcher) Profile() WatcherProfile {
 	defer w.mu.Unlock()
 	return WatcherProfile{
 		CreatedAt:   w.createdAt,
+		PID:         w.pid,
 		SendCount:   w.sendCount,
 		ShowCount:   w.showCount,
 		PollSuccess: w.pollSuccess,

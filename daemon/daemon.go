@@ -59,7 +59,7 @@ func (d *Daemon) Run() error {
 		log.Printf("discover warning: %v", err)
 	}
 	for _, s := range sessions {
-		d.addSession(s.Name, s.PipePath, s.SessionFile, s.AppRuntime)
+		d.addSession(s.Name, s.PipePath, s.SessionFile, s.PID, s.AppRuntime)
 	}
 	log.Printf("daemon: discovered %d session(s)", len(sessions))
 
@@ -81,7 +81,7 @@ func (d *Daemon) Run() error {
 }
 
 // addSession registers a session and starts a watcher goroutine.
-func (d *Daemon) addSession(name, pipePath, sessionFile, appRuntime string) {
+func (d *Daemon) addSession(name, pipePath, sessionFile string, pid int, appRuntime string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -91,7 +91,7 @@ func (d *Daemon) addSession(name, pipePath, sessionFile, appRuntime string) {
 	d.sessions[name] = pipePath
 	d.appRuntimes[name] = appRuntime
 
-	w := NewWatcher(name, pipePath, sessionFile, func(n BufferNotification) {
+	w := NewWatcher(name, pipePath, sessionFile, pid, func(n BufferNotification) {
 		d.mu.Lock()
 		d.lastNotify[name] = n
 		d.mu.Unlock()
@@ -138,6 +138,7 @@ func (d *Daemon) getWatcher(name string) (*Watcher, bool) {
 
 type sessionInfo struct {
 	Name       string `json:"name"`
+	PID        int    `json:"pid"`
 	PipePath   string `json:"pipe_path"`
 	AppRuntime string `json:"app_runtime"`
 	Status     string `json:"status"`
@@ -153,13 +154,16 @@ func (d *Daemon) listSessions() []sessionInfo {
 	for name, pipePath := range d.sessions {
 		status := "unknown"
 		uptime := ""
+		pid := 0
 		if w, ok := d.watchers[name]; ok {
 			status = w.Status()
 			p := w.Profile()
 			uptime = formatUptime(time.Since(p.CreatedAt))
+			pid = p.PID
 		}
 		result = append(result, sessionInfo{
 			Name:       name,
+			PID:        pid,
 			PipePath:   pipePath,
 			AppRuntime: d.appRuntimes[name],
 			Status:     status,
@@ -216,7 +220,7 @@ func (d *Daemon) refreshSessions() {
 		return
 	}
 	for _, s := range sessions {
-		d.addSession(s.Name, s.PipePath, s.SessionFile, s.AppRuntime)
+		d.addSession(s.Name, s.PipePath, s.SessionFile, s.PID, s.AppRuntime)
 	}
 }
 
