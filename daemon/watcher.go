@@ -13,17 +13,7 @@ import (
 	"github.com/YuujiKamura/deckpilot/pipe"
 )
 
-// BufferNotification is emitted when the watcher detects a change or stability.
-type BufferNotification struct {
-	SessionName   string
-	Content       string
-	Hash          string
-	Changed       bool
-	StableFor     int
-	Status        string
-	StatusChanged bool   // true if status changed from previous poll
-	PrevStatus    string // previous status before change
-}
+// BufferNotification moved to daemon/types.go.
 
 // pipeRequest is a command queued to the watcher's pipe goroutine.
 type pipeRequest struct {
