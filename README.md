@@ -1,61 +1,79 @@
 # deckpilot
 
-Ghostty ターミナル上の AI エージェント（Claude Code, Codex, Gemini）をプログラマブルに操作する CLI ツール。Named Pipe 経由でセッション検出・メッセージ送信・バッファ取得・自動承認を行う。
+A CLI tool for programmatic control of AI agents (Claude Code, Codex, Gemini) running in Ghostty terminal. Provides session discovery, message sending, buffer retrieval, and auto-approval via Named Pipe.
 
-## 前提条件
+## Prerequisites
 
-- **Ghostty Windows版** ([ghostty-win](https://github.com/YuujiKamura/ghostty-win)) または **Windows Terminal** (要 `wt-sidecar` 連携) が必要。
+- **Ghostty for Windows** ([ghostty-win](https://github.com/YuujiKamura/ghostty-win)) or **Windows Terminal** (requires `wt-sidecar`) is needed.
 - Go 1.21+
 - Windows 10/11
 
-## インストール
+## Installation
 
 ```bash
 go build -o deckpilot.exe .
 ```
 
-依存: `github.com/Microsoft/go-winio` のみ。
+Dependency: `github.com/Microsoft/go-winio` only.
 
-## アーキテクチャ
+## Architecture
 
 ```
 CLI (deckpilot.exe)
-├── send / show / list / launch / watch
+├── send / show / list / launch / watch / auto-approvals
 └── Daemon (\\.\pipe\deckpilot-daemon)
     ├── Session Discovery (.session files + process probing)
     ├── Per-session Watcher (500ms polling, status tracking)
     └── IPC handlers (SEND / SHOW / LIST / PING)
 ```
 
-- **Daemon**: シングルトンプロセス。初回コマンド実行時に自動起動
-- **Watcher**: セッションごとに 1 goroutine。全 pipe I/O を直列化し競合を防止
-- **IPC**: `\\.\pipe\deckpilot-daemon` 上のパイプ区切り・Base64 エンコードプロトコル
+- **Daemon**: Singleton process. Auto-starts on first command execution.
+- **Watcher**: 1 goroutine per session. Serializes all pipe I/O to prevent races.
+- **IPC**: Pipe-delimited, Base64-encoded protocol over `\\.\pipe\deckpilot-daemon`.
 
-## コマンド
+## Commands
 
-### `send` — メッセージ送信
+### Responsibility Matrix
+
+Each command has a single, well-defined responsibility:
+
+| Concern                       | `show` | `watch` | `auto-approvals` |
+|-------------------------------|--------|---------|------------------|
+| Single session detail         | Yes    | -       | -                |
+| Multi-session overview        | -      | Yes     | -                |
+| Auto-send Enter on approval   | -      | -       | Yes              |
+
+- Use **`show`** when you need to read a specific session's buffer.
+- Use **`watch`** when you want a live dashboard of all sessions and their approval status.
+- Use **`auto-approvals`** when you want Enter sent automatically on approval prompts.
+
+### `send` — Send a message
 
 ```bash
 deckpilot send <session> <message...>
 ```
 
-指定セッションにテキスト + Enter を送信する。送信前後のバッファハッシュを比較し、未反映なら自動リトライする。
+Sends text + Enter to the specified session. Compares buffer hash before and after sending; retries automatically if not reflected.
 
-- Watcher を一時停止してからコマンドキューに投入（pipe I/O 競合防止）
-- スラッシュコマンド (`/` 始まり) は TUI オートコンプリート対策で Enter を 2 回送信
-- MSYS2/Git Bash のパス変換を自動逆変換
+- Pauses the Watcher before queuing the command (prevents pipe I/O races).
+- Slash commands (`/`-prefixed) send Enter twice to bypass TUI autocomplete.
+- Automatically reverses MSYS2/Git Bash path conversion.
 
-### `show` — バッファ取得
+### `show` — Get session buffer (detail, view-only)
 
 ```bash
-deckpilot show [session] [history]
+deckpilot show [session] [--tail N] [--history] [--follow]
 ```
 
-- セッション名省略時: caller の最後に使ったセッションを自動選択
-- `history`: スクロールバック全体を取得
-- デフォルト: 末尾 50 行
+Retrieves an individual session's buffer. **Never sends input or performs auto-approval.**
+For auto-approval, use `deckpilot auto-approvals <session>`.
 
-### `list` / `ls` — セッション一覧
+- Session name optional: auto-selects the last session used by this caller.
+- `--tail N`: Show last N lines (default: 50).
+- `--history`: Retrieve full scrollback instead of live buffer.
+- `--follow` / `-f`: Poll every 2 seconds and print updates. Display-only — no approval.
+
+### `list` / `ls` — List sessions
 
 ```bash
 deckpilot list
@@ -67,31 +85,54 @@ claude-01   winui3    idle
 codex-02    wt        active
 ```
 
-### `launch` — エージェント起動
+### `launch` — Start an agent
 
 ```bash
 deckpilot launch <agent> <prompt...> [--cwd DIR]
 ```
 
-Ghostty ウィンドウを新規起動し、エージェントの準備完了を待ってからプロンプトを送信する。セッション名を stdout に出力するのでスクリプトから利用可能。
+Starts a new Ghostty window, waits for the agent to be ready, then sends the prompt. Prints the session name to stdout for use in scripts.
 
-| Agent   | コマンド                                  | Ready 文字列 |
-|---------|------------------------------------------|--------------|
-| claude  | `claude --dangerously-skip-permissions`  | `>`          |
-| sonnet  | claude `--model sonnet`                  | `>`          |
-| haiku   | claude `--model haiku`                   | `>`          |
-| codex   | `codex --full-auto`                      | `›`          |
-| gemini  | `gemini`                                 | `>`          |
+| Agent  | Command                                  | Ready string |
+|--------|------------------------------------------|--------------|
+| claude | `claude --dangerously-skip-permissions`  | `>`          |
+| sonnet | `claude --model sonnet`                  | `>`          |
+| haiku  | `claude --model haiku`                   | `>`          |
+| codex  | `codex --full-auto`                      | `›`          |
+| gemini | `gemini`                                 | `>`          |
 
-### `watch` — 自動承認モニタ
+### `watch` — Monitor sessions (view-only)
 
 ```bash
-deckpilot watch <session>
+deckpilot watch [session] [--once] [--json]
 ```
 
-2 秒間隔でバッファを監視し、承認プロンプトを検出したら自動で Enter を送信する。
+Displays a live dashboard of all active sessions. **Does not send Enter or perform any approval.**
+For auto-approval, use `deckpilot auto-approvals <session>`.
 
-検出パターン:
+The `PENDING` column shows which sessions are awaiting approval input:
+
+```
+NAME              STATUS   PENDING              LAST-CHANGE  TAIL
+claude-01         active   YES(Y/n)             15:04:03     "Allow edit to foo.ts? (Y/n)"
+codex-02          idle     -                    15:03:45     "› ready"
+```
+
+Flags:
+- `--once`: Take a single snapshot and exit (useful in scripts).
+- `--json`: Output JSON Lines for machine consumption.
+
+**Deprecated alias**: `deckpilot watch <session>` (with a session name argument) now emits a deprecation warning and runs in monitor-only mode. Use `deckpilot auto-approvals <session>` for auto-approval behavior. Suppress the warning with `DECKPILOT_SUPPRESS_DEPRECATION=1`.
+
+### `auto-approvals` — Auto-approve prompts (alias: `approve`)
+
+```bash
+deckpilot auto-approvals <session> [--interval 2s] [--dry-run] [--verbose]
+```
+
+Monitors a session and automatically sends Enter when an approval prompt is detected. **This is the only command that sends Enter.**
+
+Detection patterns:
 - `Action Required`
 - `Enter to select`
 - `Y/n`
@@ -99,9 +140,14 @@ deckpilot watch <session>
 - `trust`
 - `Waiting`
 
-Ctrl+C で停止。
+Flags:
+- `--interval <duration>`: Polling interval (default: `2s`). Examples: `1s`, `500ms`.
+- `--dry-run`: Detect prompts and log them, but **do not send Enter**.
+- `--verbose`: Log the matched pattern name (e.g., `Prompt detected (matched: "Y/n")`).
 
-## Caller 識別
+Stop with Ctrl+C.
+
+## Caller Identification
 
 `show` でセッション名を省略できるよう、呼び出し元ターミナルを自動識別する。
 
