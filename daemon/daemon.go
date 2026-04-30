@@ -582,86 +582,63 @@ func (d *Daemon) hookEquals(a, b IdleHook) bool {
 		a.URL == b.URL
 }
 
-// shouldRegisterCallback determines if a callback hook should be registered
+// snapshotSessions returns a point-in-time view of all watched sessions,
+// suitable to pass into the pure policy helpers in policy.go. Taking the
+// snapshot under a single lock avoids the split-read hazards that the previous
+// per-call mu.Lock dance had.
+func (d *Daemon) snapshotSessions() []SessionSnapshot {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([]SessionSnapshot, 0, len(d.watchers))
+	for name, w := range d.watchers {
+		p := w.Profile()
+		out = append(out, SessionSnapshot{
+			Name:       name,
+			Status:     w.Status(),
+			LastPollOK: p.LastPollOK,
+		})
+	}
+	return out
+}
+
+// shouldRegisterCallback is a thin orchestration wrapper over the pure policy
+// in ShouldRegisterCallback. It snapshots the registry, delegates the decision,
+// and emits the existing log lines so operators can continue to grep for them.
 func (d *Daemon) shouldRegisterCallback(targetSession, callerSession string) bool {
 	log.Printf("daemon: shouldRegisterCallback target=%s caller=%s", targetSession, callerSession)
 
-	// Don't register callback if target and caller are the same
-	if targetSession == callerSession {
+	decision := ShouldRegisterCallback(targetSession, callerSession, d.snapshotSessions())
+	switch decision.Reason {
+	case CallbackRejectSameRaw:
 		log.Printf("daemon: skipping callback - target and caller are the same")
-		return false
-	}
-
-	// Resolve caller session from lastUsed if it looks like a client ID
-	actualCaller := d.resolveCallerSession(callerSession)
-	if actualCaller == "" {
+	case CallbackRejectUnresolved:
 		log.Printf("daemon: could not resolve caller session for %s", callerSession)
-		return false
-	}
-
-	// Reject heuristic self-loop (issue #19): when the raw caller cannot be
-	// matched to a watcher, resolveCallerSession falls back to "most recently
-	// active watcher" — which is the target itself right after a send. Without
-	// this guard we'd auto-register callback_session == target and notify the
-	// target's own pipe.
-	if actualCaller == targetSession {
+	case CallbackRejectHeuristicLoop:
 		log.Printf("daemon: skipping callback - resolved caller aliases to target %s (heuristic self-loop)", targetSession)
-		return false
-	}
-
-	// Check if target session exists
-	_, exists := d.getWatcher(targetSession)
-	if !exists {
+	case CallbackRejectTargetNotFound:
 		log.Printf("daemon: target session %s not found", targetSession)
-		return false
+	case CallbackAccept:
+		log.Printf("daemon: callback conditions met - target=%s caller=%s", targetSession, decision.ActualCaller)
 	}
-
-	log.Printf("daemon: callback conditions met - target=%s caller=%s", targetSession, actualCaller)
-	return true
+	return decision.Register
 }
 
-// resolveCallerSession resolves caller ID to session name using active session heuristics
+// resolveCallerSession is a thin orchestration wrapper over the pure
+// ResolveCaller policy. Preserves previous log lines for grep-compatibility.
 func (d *Daemon) resolveCallerSession(caller string) string {
 	if caller == "" {
 		return ""
 	}
-
-	// Check if caller is already a session name
-	if _, exists := d.getWatcher(caller); exists {
-		return caller
+	resolved := ResolveCaller(caller, d.snapshotSessions())
+	switch {
+	case resolved == "":
+		log.Printf("daemon: could not resolve caller %s to any session", caller)
+	case resolved == caller:
+		// exact-match path — no extra log, matches prior behavior
+	default:
+		log.Printf("daemon: resolved caller %s to recent session: %s", caller, resolved)
 	}
-
-	// Find the most recently active session (heuristic approach)
-	// This is more reliable than lastUsed mapping for callback scenarios
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	var bestSession string
-	var mostRecentActivity time.Time
-
-	for sessionName, watcher := range d.watchers {
-		if watcher.Status() == "active" {
-			log.Printf("daemon: found active session for callback: %s", sessionName)
-			return sessionName
-		}
-	}
-
-	// If no active session, find the one with most recent activity
-	for sessionName, watcher := range d.watchers {
-		profile := watcher.Profile()
-		if !profile.LastPollOK.IsZero() && profile.LastPollOK.After(mostRecentActivity) {
-			mostRecentActivity = profile.LastPollOK
-			bestSession = sessionName
-		}
-	}
-
-	if bestSession != "" {
-		log.Printf("daemon: resolved caller %s to recent session: %s", caller, bestSession)
-		return bestSession
-	}
-
-	log.Printf("daemon: could not resolve caller %s to any session", caller)
-	return ""
+	return resolved
 }
 
 // registerCallbackHook registers a one-time callback hook for idle notification
