@@ -8,7 +8,15 @@ import (
 	"github.com/YuujiKamura/deckpilot/daemon"
 )
 
+var Version = "dev"
+var Commit = "unknown"
+var BuildTime = "unknown"
+
 func main() {
+	cmd.SetVersionVars(Version, Commit, BuildTime)
+	daemon.Version = Version
+	daemon.Commit = Commit
+	daemon.BuildTime = BuildTime
 	if len(os.Args) < 2 {
 		cmd.List(nil) // default: show sessions
 		return
@@ -30,6 +38,8 @@ func main() {
 		cmd.Launch(os.Args[2:])
 	case "watch":
 		cmd.Watch(os.Args[2:])
+	case "version":
+		cmd.Version(os.Args[2:])
 	case "help", "-h", "--help":
 		fmt.Print(`Usage: deckpilot <command> [args]
 

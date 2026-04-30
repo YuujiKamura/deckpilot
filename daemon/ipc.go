@@ -17,6 +17,12 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// Version variables for the daemon process.
+// These are set via -ldflags at build time (same binary as main).
+var Version = "dev"
+var Commit = "unknown"
+var BuildTime = "unknown"
+
 // handleConn reads one line from the connection, dispatches the command,
 // writes the response, and closes.
 func (d *Daemon) handleConn(conn net.Conn) {
@@ -46,11 +52,31 @@ func (d *Daemon) handleConn(conn net.Conn) {
 		resp = d.handleList()
 	case "SHOW":
 		resp = d.handleShow(parts)
+	case "VERSION":
+		resp = handleVersion()
 	default:
 		resp = fmt.Sprintf("ERR|unknown command: %s\n", cmd)
 	}
 
 	conn.Write([]byte(resp))
+}
+
+func handleVersion() string {
+	type versionInfo struct {
+		Version string `json:"version"`
+		Commit  string `json:"commit"`
+		BuiltAt string `json:"built_at"`
+	}
+	info := versionInfo{
+		Version: Version,
+		Commit:  Commit,
+		BuiltAt: BuildTime,
+	}
+	b, err := json.Marshal(info)
+	if err != nil {
+		return fmt.Sprintf("ERR|json: %v\n", err)
+	}
+	return fmt.Sprintf("OK|%s\n", string(b))
 }
 
 func (d *Daemon) handleSend(parts []string) string {
