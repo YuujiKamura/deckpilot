@@ -84,6 +84,13 @@ func (d *Daemon) Run() error {
 		}
 	}()
 
+	// Start WebSocket bridge for GitHub Pages/Web UI
+	go func() {
+		if err := d.ServeWS(":8099"); err != nil {
+			log.Printf("daemon: WebSocket server error: %v", err)
+		}
+	}()
+
 	listener, err := winio.ListenPipe(IPCPipePath(), nil)
 	if err != nil {
 		return fmt.Errorf("listen pipe: %w", err)

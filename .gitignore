@@ -3,3 +3,4 @@
 .gopath/
 LOCAL_APPDATA_FONTCONFIG_CACHE/
 .omc/
+.gstack/
