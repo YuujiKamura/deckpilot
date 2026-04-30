@@ -157,7 +157,7 @@ func ActionSendCtrlC(d *Daemon) HangAction {
 		if !ok || pipePath == "" {
 			return fmt.Errorf("ActionSendCtrlC: no pipe for session %q", info.SessionName)
 		}
-		if err := pipe.SendRaw(pipePath, []byte{0x03}); err != nil {
+		if _, err := pipe.SendRaw(pipePath, []byte{0x03}); err != nil {
 			return fmt.Errorf("ActionSendCtrlC: send: %w", err)
 		}
 		log.Printf("hang-ctrlc[%s]: 0x03 sent to %s", info.SessionName, pipePath)

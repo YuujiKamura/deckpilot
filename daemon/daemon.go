@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -66,10 +67,34 @@ func New() *Daemon {
 	return d
 }
 
-// Run starts the daemon: auto-discovers sessions, starts watchers, and
-// listens for IPC connections on the daemon pipe.
+// Run starts the daemon: handles single-instance takeover, starts background
+// discovery, and listens for IPC connections on the daemon pipe.
 func (d *Daemon) Run() error {
-	// Set up log file for daemon diagnostics
+	// 1. SINGLE-INSTANCE TAKEOVER: Detect existing daemon and request it to shut down.
+	// This ensures the new instance (potentially a newer build) takes priority.
+	// We do this BEFORE any heavy initialization to avoid startup stalls.
+	pipePath := IPCPipePath()
+	conn, err := winio.DialPipe(pipePath, nil)
+	if err == nil {
+		log.Printf("daemon: existing daemon detected at %s, requesting shutdown to take over", pipePath)
+		fmt.Fprintln(conn, "SHUTDOWN")
+		conn.Close()
+
+		// Wait for the pipe to be released (up to 3 seconds)
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			// Try to dial again; if it fails, it means the pipe is released
+			c, err := winio.DialPipe(pipePath, nil)
+			if err != nil {
+				// Pipe is gone or inaccessible — we can proceed to ListenPipe
+				break
+			}
+			c.Close()
+			time.Sleep(200 * time.Millisecond)
+		}
+	}
+
+	// 2. Set up logging and core initialization
 	logPath := filepath.Join(os.TempDir(), "deckpilot-daemon.log")
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err == nil {
@@ -77,25 +102,20 @@ func (d *Daemon) Run() error {
 		log.Printf("=== daemon started pid=%d ===", os.Getpid())
 	}
 
-	// Auto-discover existing sessions.
-	sessions, err := pipe.Discover()
-	if err != nil {
-		log.Printf("discover warning: %v", err)
-	}
-	for _, s := range sessions {
-		d.addSession(s.Name, s.PipePath, s.WsURL, s.SessionFile, s.PID, s.HWND, s.AppRuntime)
-	}
-	log.Printf("daemon: discovered %d session(s)", len(sessions))
+	// 3. Start background discovery and refresh loop.
+	// Using a channel to feed discovered sessions avoids blocking startup.
+	discoveryCh := make(chan []pipe.Session, 1)
+	go d.discoveryLoop(discoveryCh)
 
-	// Periodic re-discovery and revival of sessions (Autonomous Heartbeat)
 	go func() {
-		for {
-			time.Sleep(5 * time.Second)
-			d.refreshSessions()
+		for sessions := range discoveryCh {
+			for _, s := range sessions {
+				d.addSession(s.Name, s.PipePath, s.WsURL, s.SessionFile, s.PID, s.HWND, s.AppRuntime)
+			}
 		}
 	}()
 
-	// Start WebSocket bridge for GitHub Pages/Web UI
+	// 4. Start WebSocket bridge for GitHub Pages/Web UI
 	if d.WSPort > 0 {
 		go func() {
 			addr := fmt.Sprintf("127.0.0.1:%d", d.WSPort)
@@ -103,16 +123,17 @@ func (d *Daemon) Run() error {
 				log.Printf("daemon: WebSocket server error: %v", err)
 			}
 		}()
-	} else {
-		log.Printf("daemon: WebSocket server disabled (--ws-port 0)")
 	}
 
-	listener, err := winio.ListenPipe(IPCPipePath(), nil)
+	listener, err := winio.ListenPipe(pipePath, nil)
 	if err != nil {
+		if strings.Contains(err.Error(), "Access is denied") || strings.Contains(err.Error(), "0x5") {
+			return fmt.Errorf("daemon is already running and refusing to exit (pipe %s locked)", pipePath)
+		}
 		return fmt.Errorf("listen pipe: %w", err)
 	}
 	defer listener.Close()
-	log.Printf("daemon: listening on %s", IPCPipePath())
+	log.Printf("daemon: listening on %s", pipePath)
 
 	for {
 		conn, err := listener.Accept()
@@ -121,6 +142,30 @@ func (d *Daemon) Run() error {
 			continue
 		}
 		go d.handleConn(conn)
+	}
+}
+
+// discoveryLoop runs in a background goroutine, performing initial and periodic
+// discovery/refresh. Results are sent through a channel to be processed by the
+// main daemon state. Interval is 10s to minimize CPU overhead.
+func (d *Daemon) discoveryLoop(ch chan []pipe.Session) {
+	// Initial discovery
+	if sessions, err := pipe.Discover(); err == nil {
+		ch <- sessions
+		log.Printf("daemon: initial discovery found %d session(s)", len(sessions))
+	}
+
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		// Perform liveness checks and pruning
+		d.refreshSessions()
+
+		// Re-discover new sessions
+		if sessions, err := pipe.Discover(); err == nil {
+			ch <- sessions
+		}
 	}
 }
 
@@ -244,40 +289,52 @@ func formatUptime(d time.Duration) string {
 	return fmt.Sprintf("%ds", s)
 }
 
-// refreshSessions re-discovers sessions, attempts to revive dead watchers, and adds new ones.
+// refreshSessions re-discovers sessions, attempts to revive dead watchers, and prunes sessions whose processes are gone.
 func (d *Daemon) refreshSessions() {
-	// Attempt to revive dead watchers instead of deleting them
 	d.mu.Lock()
-	var deadNames []string
+
+	// 1. Identify sessions to prune (status="dead" and process gone)
+	var toPrune []string
 	for name, w := range d.watchers {
 		if w.Status() == "dead" {
-			deadNames = append(deadNames, name)
-			_ = w // collect names while holding lock
+			p := w.Profile()
+			// Only prune if we have a real PID and it's confirmed gone.
+			// PID 0 is used for mock sessions in tests and should not be pruned.
+			if p.PID > 0 && !pipe.IsProcessAlive(p.PID) {
+				toPrune = append(toPrune, name)
+			}
+		}
+	}
+
+	// 2. Perform pruning
+	for _, name := range toPrune {
+		delete(d.sessions, name)
+		delete(d.wsURLs, name)
+		delete(d.appRuntimes, name)
+		delete(d.watchers, name)
+		delete(d.lastNotify, name)
+		log.Printf("daemon: pruned dead session %q (process gone)", name)
+	}
+
+	// 3. Identify dead sessions to attempt revival
+	var toRevive []string
+	for name, w := range d.watchers {
+		if w.Status() == "dead" {
+			toRevive = append(toRevive, name)
 		}
 	}
 	d.mu.Unlock()
 
-	for _, name := range deadNames {
+	// 4. Attempt revival outside the main lock
+	for _, name := range toRevive {
 		w, ok := d.getWatcher(name)
 		if !ok {
 			continue
 		}
 		if w.Revive() {
-			// Pipe is responsive again — restart the watcher goroutine
 			log.Printf("daemon: revived session %q", name)
 			go w.Run(context.Background())
-		} else {
-			// Keep the session in maps with status "dead" so it remains visible
-			log.Printf("daemon: session %q still dead, keeping entry", name)
 		}
-	}
-
-	sessions, err := pipe.Discover()
-	if err != nil {
-		return
-	}
-	for _, s := range sessions {
-		d.addSession(s.Name, s.PipePath, s.WsURL, s.SessionFile, s.PID, s.HWND, s.AppRuntime)
 	}
 }
 

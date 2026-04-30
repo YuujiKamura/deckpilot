@@ -327,7 +327,7 @@ func ensurePipePrefix(p string) string {
 	return `\\.\pipe\` + strings.TrimPrefix(p, `\\.\pipe\`)
 }
 
-func isProcessAlive(pid int) bool {
+func IsProcessAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}

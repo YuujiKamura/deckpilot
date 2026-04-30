@@ -54,6 +54,7 @@ type Watcher struct {
 	onNotify    func(BufferNotification)
 	reqCh       chan pipeRequest
 	pauseCh     chan chan struct{} // send pause signal, receive resume signal
+	client      *pipe.Client
 }
 
 // NewWatcher creates a Watcher for the given session.
@@ -70,6 +71,7 @@ func NewWatcher(name, pipePath, sessionFile string, pid int, hwndStr string, onN
 		onNotify:    onNotify,
 		reqCh:       make(chan pipeRequest, 16),
 		pauseCh:     make(chan chan struct{}),
+		client:      pipe.NewClient(pipePath),
 	}
 }
 
@@ -77,6 +79,8 @@ func NewWatcher(name, pipePath, sessionFile string, pid int, hwndStr string, onN
 // Poll on ticker, drain requests between polls.
 func (w *Watcher) Run(ctx context.Context) {
 	log.Printf("watcher[%s]: goroutine started, pipe=%s, hwnd=%v", w.name, w.pipePath, w.hwnd)
+	defer w.client.Close()
+
 	if ctx == nil {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithCancel(context.Background())
@@ -129,11 +133,15 @@ func (w *Watcher) handleRequest(req pipeRequest) {
 	case "sendkeys":
 		prevStatus := w.Status()
 		// Send text via INPUT
-		err := pipe.SendKeys(w.pipePath, req.payload)
+		cmdID, err := w.client.SendKeys(req.payload)
 		// Wait for Ghostty to process INPUT before sending RAW_INPUT \r
 		if err == nil {
-			time.Sleep(100 * time.Millisecond)
-			err = pipe.SendRaw(w.pipePath, []byte("\r"))
+			if cmdID > 0 {
+				if errPoll := w.client.WaitForAck(cmdID); errPoll != nil {
+					log.Printf("watcher[%s]: warning: %v", w.name, errPoll)
+				}
+			}
+			_, err = w.client.SendRaw([]byte("\r"))
 		}
 		res.err = err
 		if err == nil {
@@ -149,13 +157,13 @@ func (w *Watcher) handleRequest(req pipeRequest) {
 		}
 		w.sendCount++
 	case "tail":
-		res.content, res.err = pipe.Tail(w.pipePath, req.lines)
+		res.content, res.err = w.client.Tail(req.lines)
 		if res.err == nil {
 			w.updateContent(res.content)
 		}
 		w.showCount++
 	case "history":
-		res.content, res.err = pipe.History(w.pipePath)
+		res.content, res.err = w.client.History()
 		w.showCount++
 	}
 	req.result <- res
@@ -187,7 +195,7 @@ func (w *Watcher) poll() {
 		// If hung, don't let it die yet.
 	}
 
-	content, err := pipe.Tail(w.pipePath, 50)
+	content, err := w.client.Tail(50)
 	if err != nil {
 		errStr := err.Error()
 		// NO_TABS = terminal has no tabs (session ended). Immediate dead, no retry.
@@ -241,7 +249,7 @@ func (w *Watcher) Revive() bool {
 		return true // already alive
 	}
 	// Try to ping the pipe
-	if err := pipe.Ping(w.pipePath); err != nil {
+	if err := w.client.Ping(); err != nil {
 		return false
 	}
 	// Pipe is responsive again — reset status and poll
@@ -382,6 +390,11 @@ func (w *Watcher) LastContent() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.lastContent
+}
+
+// Client returns the persistent pipe client for this session.
+func (w *Watcher) Client() *pipe.Client {
+	return w.client
 }
 
 // WatcherProfile holds session profiling counters.
