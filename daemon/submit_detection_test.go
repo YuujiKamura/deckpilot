@@ -241,3 +241,71 @@ func TestConfirmSubmit_EmptyPreSubmitText_ThinkingStillWorks(t *testing.T) {
 		t.Errorf("expected SubmitOKThinking with empty preSubmitText, got %q", result.Status)
 	}
 }
+
+func TestVisibilityProbe_StripsAllWhitespace(t *testing.T) {
+	msg := "  deckpilot watchを\n  実行して\tください \r\n"
+	got := visibilityProbe(msg)
+	want := "deckpilotwatchを実行してください"
+	if got != want {
+		t.Fatalf("expected whitespace-stripped probe %q, got %q", want, got)
+	}
+}
+
+func TestProbeVisibleInBuffer_WordWrapWhitespaceInsensitive(t *testing.T) {
+	probe := visibilityProbe("deckpilot watchを実行してください これは visibility probe 実機テストです")
+	buf := strings.Join([]string{
+		"C:\\Users\\yuuji>deckpilot watchを実行してください これは visibility prob",
+		"e 実機テストです",
+	}, "\n")
+	if !probeVisibleInBuffer(buf, probe) {
+		t.Fatalf("expected probe to be visible across wrapped buffer content")
+	}
+}
+
+func TestConfirmSubmit_OKCleared_WordWrapWhitespaceInsensitive(t *testing.T) {
+	text := "deckpilot watchを実行してください"
+	// Simulate the submitted text wrapping across lines in scrollback while the
+	// input area no longer contains it.
+	buf := strings.Join([]string{
+		"history: deckpilot watchを",
+		"実行して ください",
+		"line3",
+		"line4",
+		"line5",
+		"line6",
+		"line7",
+		"❯ ",
+	}, "\n")
+
+	result := ConfirmSubmit(
+		fixedTailFn(buf),
+		"", "",
+		text,
+		200*time.Millisecond, 10*time.Millisecond,
+	)
+	if result.Status != SubmitOKCleared {
+		t.Fatalf("expected SubmitOKCleared for wrapped text, got %q (evidence: %s)", result.Status, result.Evidence)
+	}
+}
+
+func TestConfirmSubmit_Unconfirmed_ShortTokenOnlyInHistory(t *testing.T) {
+	text := "deckpilot watchを実行してください"
+	// "deckpilot" exists in history, but the full whitespace-stripped message does
+	// not. Old short-token probing would have produced a false ok_cleared here.
+	buf := strings.Join([]string{
+		"git log: fix deckpilot watch race",
+		"cd deckpilot",
+		"other output",
+		"❯ ",
+	}, "\n")
+
+	result := ConfirmSubmit(
+		fixedTailFn(buf),
+		"", "",
+		text,
+		80*time.Millisecond, 10*time.Millisecond,
+	)
+	if result.Status != SubmitUnconfirmed {
+		t.Fatalf("expected SubmitUnconfirmed when only short history tokens match, got %q (evidence: %s)", result.Status, result.Evidence)
+	}
+}

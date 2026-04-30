@@ -50,42 +50,55 @@ func ExtractInputLine(buf string) string {
 	return result
 }
 
-// visibilityProbe returns a short leading token from msg that the TUI will
-// render contiguously regardless of word-wrap boundaries. It is the first
-// run of non-space runes, capped at 24 runes. Returns "" if msg is empty or
-// starts with whitespace only.
-//
-// Used by handleSend Phase 1.5 to detect that the TUI has consumed the INPUT
-// without false negatives caused by display-width wrapping.
-func visibilityProbe(msg string) string {
-	const maxRunes = 24
-	count := 0
-	end := 0
-	for i, r := range msg {
+// stripWhitespace removes all whitespace runes (space, tab, CR, LF) from s.
+// Used to make Contains-based matching robust to TUI word-wrap which inserts
+// \n at display-width boundaries inside our sent message.
+func stripWhitespace(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
 		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
-			if count > 0 {
-				break
-			}
 			continue
 		}
-		count++
-		end = i + len(string(r))
-		if count >= maxRunes {
-			break
-		}
+		b.WriteRune(r)
 	}
-	if count == 0 {
-		return ""
+	return b.String()
+}
+
+// visibilityProbe returns a whitespace-stripped representation of msg suitable
+// for Contains-matching against (stripped) buffer content. This is robust to
+// both word-wrap and differs from short prefixes that can collide with
+// unrelated scrollback history (e.g. "deckpilot" appearing in past commits).
+//
+// Used by handleSend Phase 1.5 and ConfirmSubmit Phase 3.
+func visibilityProbe(msg string) string {
+	return stripWhitespace(msg)
+}
+
+// probeVisibleInBuffer reports whether the whitespace-stripped probe is visible
+// in buf after whitespace stripping. This keeps visibility checks robust to
+// word-wrap and spacing differences in the rendered TUI buffer.
+func probeVisibleInBuffer(buf, probe string) bool {
+	if probe == "" {
+		return true
 	}
-	// Find where the probe starts (first non-space)
-	start := 0
-	for i, r := range msg {
-		if r != ' ' && r != '\t' && r != '\n' && r != '\r' {
-			start = i
-			break
-		}
+	return strings.Contains(stripWhitespace(buf), probe)
+}
+
+// probeInBufferExcludingTail reports whether probe appears in the buffer
+// EXCLUDING the last tailLines. Used to detect when probe has moved from
+// input area (last N lines) to scrollback/conversation area.
+func probeInBufferExcludingTail(buf, probe string, tailLines int) bool {
+	if probe == "" {
+		return false
 	}
-	return msg[start:end]
+	lines := strings.Split(buf, "\n")
+	if len(lines) <= tailLines {
+		return false // buffer too small, nowhere outside tail
+	}
+	// Check only lines [0 : len-tailLines] (excluding tail)
+	excludedBuf := strings.Join(lines[:len(lines)-tailLines], "\n")
+	return strings.Contains(stripWhitespace(excludedBuf), probe)
 }
 
 // tailLines returns the last n lines of buf as a single string.
@@ -107,7 +120,9 @@ func findLineContaining(buf, substr string) string {
 	return ""
 }
 
-// containsInTail reports whether substr appears in the last tailN lines of buf.
+// containsInTail reports whether substr appears in the last tailN lines of buf
+// after whitespace stripping. This keeps the input-area check robust against
+// TUI word-wrap and incidental spacing differences.
 func containsInTail(buf, substr string, tailN int) bool {
 	if substr == "" {
 		return false
@@ -117,12 +132,8 @@ func containsInTail(buf, substr string, tailN int) bool {
 	if start < 0 {
 		start = 0
 	}
-	for _, line := range lines[start:] {
-		if strings.Contains(line, substr) {
-			return true
-		}
-	}
-	return false
+	joined := strings.Join(lines[start:], "\n")
+	return strings.Contains(stripWhitespace(joined), substr)
 }
 
 // ConfirmSubmit observes the pipe's buffer to detect whether a submit happened.
@@ -178,7 +189,8 @@ func ConfirmSubmit(
 			if preSubmitText != "" {
 				probe := visibilityProbe(preSubmitText)
 				if probe != "" {
-					inBuf := strings.Contains(buf, probe)
+					// Check if probe moved from input area to scrollback area
+					inBuf := probeInBufferExcludingTail(buf, probe, inputAreaTailLines)
 					inInputArea := containsInTail(buf, probe, inputAreaTailLines)
 					if inBuf && !inInputArea {
 						return SubmitResult{

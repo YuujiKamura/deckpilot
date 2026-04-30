@@ -28,12 +28,14 @@ type Session struct {
 }
 
 // Discover finds active Ghostty CP sessions.
+// PRIMARY: Process scan (reliable for running ghostty.exe)
+// FALLBACK: Session files (for persisted metadata)
 func Discover() ([]Session, error) {
-	sessions, _ := discoverFromSessionFiles()
+	sessions, _ := discoverFromProcesses()
 	if len(sessions) > 0 {
 		return sessions, nil
 	}
-	return discoverFromProcesses()
+	return discoverFromSessionFiles()
 }
 
 func discoverFromSessionFiles() ([]Session, error) {
@@ -81,12 +83,16 @@ func discoverFromSessionFiles() ([]Session, error) {
 			}
 			// -------------------------------------------
 
-			if !isProcessAlive(s.PID) {
-				if err := os.Remove(path); err == nil {
-					cleaned++
-				}
-				continue
-			}
+			// DISABLED: Don't delete session files based on process alive check
+			// This prevents daemon restarts from removing valid session files
+			// for processes that are still running.
+			//
+			// if !isProcessAlive(s.PID) {
+			// 	if err := os.Remove(path); err == nil {
+			// 		cleaned++
+			// 	}
+			// 	continue
+			// }
 			if s.WsURL != "" {
 				// Web session: validate via WebSocket ping
 				if err := PingWS(s.WsURL); err != nil {
