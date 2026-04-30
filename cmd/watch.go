@@ -29,10 +29,10 @@ func Watch(args []string) {
 
 	lastHash := ""
 	sentEnter := false // true after we send Enter; reset when prompt disappears
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
-	fmt.Fprintf(os.Stderr, "watching %s (Ctrl+C to stop)\n", name)
+	fmt.Fprintf(os.Stderr, "watching %s (2s poll, Ctrl+C to stop)\n", name)
 
 	for {
 		select {
@@ -42,17 +42,30 @@ func Watch(args []string) {
 		case <-ticker.C:
 			content, status, err := daemon.DaemonShow(name, "buffer", caller)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "watch: %v\n", err)
+				fmt.Fprintf(os.Stderr, "[%s] watch: %v (retrying...)\n", time.Now().Format("15:04:05"), err)
+				// Session may have temporarily disconnected, wait and retry
+				time.Sleep(2 * time.Second)
 				continue
 			}
 
 			hash := fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
-			hasPrompt := strings.Contains(content, "Action Required") ||
-				strings.Contains(content, "Enter to select") ||
-				strings.Contains(content, "Y/n") ||
-				strings.Contains(content, "Allow") ||
-				strings.Contains(content, "trust") ||
-				strings.Contains(content, "Waiting")
+
+			// Skip empty buffer — pipe may not be ready yet
+			if strings.TrimSpace(content) == "" {
+				continue
+			}
+
+			// Only check last 15 lines for prompts to avoid false positives from log output
+			promptLines := content
+			if lines := strings.Split(content, "\n"); len(lines) > 15 {
+				promptLines = strings.Join(lines[len(lines)-15:], "\n")
+			}
+			hasPrompt := strings.Contains(promptLines, "Action Required") ||
+				strings.Contains(promptLines, "Enter to select") ||
+				strings.Contains(promptLines, "Y/n") ||
+				strings.Contains(promptLines, "Allow") ||
+				strings.Contains(promptLines, "trust") ||
+				strings.Contains(promptLines, "Waiting")
 
 			// Reset flag once prompt disappears (agent moved on)
 			if !hasPrompt {
