@@ -38,6 +38,8 @@ func main() {
 		cmd.Launch(os.Args[2:])
 	case "watch":
 		cmd.Watch(os.Args[2:])
+	case "hang-detect":
+		cmd.HangDetect(os.Args[2:])
 	case "auto-approvals", "approve":
 		cmd.AutoApprovals(os.Args[2:])
 	case "notify":
@@ -57,6 +59,10 @@ Commands:
   list                                            List active sessions (alias: ls)
   launch           <agent> <prompt...> [--cwd D]  Start agent in new Ghostty window
   watch            [session] [--once] [--json]    Monitor sessions (view-only, no approval)
+  hang-detect      <session> [--cpu-threshold N]  Detect agent hang by CPU + stall
+                   [--stall-seconds N] [--probe-interval DUR]
+                   [--on-hang notify|ctrl-c|kill-child|kill-session]
+                   [--include-children|--no-include-children] [--once]
   auto-approvals   <session> [--interval 2s]      Auto-approve prompts (alias: approve)
                    [--dry-run] [--verbose]
   notify           add|remove|list <args>         Manage idle notification hooks
