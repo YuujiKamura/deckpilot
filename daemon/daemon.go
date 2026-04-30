@@ -40,6 +40,7 @@ type Daemon struct {
 	onNotify    func(BufferNotification) // external callback (optional)
 	lastUsed    map[string]string        // caller -> session name
 	idleHooks   []IdleHook               // hooks to execute on idle transition
+	WSPort      int                      // WebSocket control port (default 8080)
 }
 
 // New creates a new Daemon instance.
@@ -52,6 +53,7 @@ func New() *Daemon {
 		lastNotify:  make(map[string]BufferNotification),
 		lastUsed:    make(map[string]string),
 		idleHooks:   make([]IdleHook, 0),
+		WSPort:      8080, // Default port
 	}
 }
 
@@ -85,11 +87,16 @@ func (d *Daemon) Run() error {
 	}()
 
 	// Start WebSocket bridge for GitHub Pages/Web UI
-	go func() {
-		if err := d.ServeWS(":8099"); err != nil {
-			log.Printf("daemon: WebSocket server error: %v", err)
-		}
-	}()
+	if d.WSPort > 0 {
+		go func() {
+			addr := fmt.Sprintf("127.0.0.1:%d", d.WSPort)
+			if err := d.ServeWS(addr); err != nil {
+				log.Printf("daemon: WebSocket server error: %v", err)
+			}
+		}()
+	} else {
+		log.Printf("daemon: WebSocket server disabled (--ws-port 0)")
+	}
 
 	listener, err := winio.ListenPipe(IPCPipePath(), nil)
 	if err != nil {
