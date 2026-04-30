@@ -11,14 +11,15 @@ import (
 )
 
 // AutoApprovals monitors a session and automatically sends Enter when an
-// approval prompt is detected. Flags: --dry-run, --verbose, --interval <dur>.
-// usage: deckpilot auto-approvals <session> [--interval 2s] [--dry-run] [--verbose]
+// approval prompt is detected. Flags: --dry-run, --verbose, --interval <dur>,
+// --agent <claude|gemini|codex>.
+// usage: deckpilot auto-approvals <session> [--interval 2s] [--dry-run] [--verbose] [--agent <name>]
 func AutoApprovals(args []string) {
-	// Parse flags
 	var sessionName string
 	dryRun := false
 	verbose := false
 	interval := 2 * time.Second
+	agentType := "" // empty → auto-detect, then fall back to "claude"
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -38,6 +39,13 @@ func AutoApprovals(args []string) {
 				os.Exit(1)
 			}
 			interval = d
+		case "--agent":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "auto-approvals: --agent requires a name (e.g. claude, gemini, codex)")
+				os.Exit(1)
+			}
+			i++
+			agentType = args[i]
 		default:
 			if strings.HasPrefix(args[i], "--") {
 				fmt.Fprintf(os.Stderr, "auto-approvals: unknown flag %q\n", args[i])
@@ -50,7 +58,7 @@ func AutoApprovals(args []string) {
 	}
 
 	if sessionName == "" {
-		fmt.Fprintln(os.Stderr, "usage: deckpilot auto-approvals <session> [--interval 2s] [--dry-run] [--verbose]")
+		fmt.Fprintln(os.Stderr, "usage: deckpilot auto-approvals <session> [--interval 2s] [--dry-run] [--verbose] [--agent <name>]")
 		os.Exit(1)
 	}
 
@@ -64,7 +72,17 @@ func AutoApprovals(args []string) {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt)
 
-	sentEnter := false // true after we send Enter; reset when prompt disappears
+	// sentEnter: true after we send Enter for the current prompt appearance;
+	// reset when the prompt disappears.
+	sentEnter := false
+
+	// entersSent counts total Enters sent since last backoff reset.
+	// When it reaches maxEntersBeforeBackoff, we pause for backoffDuration.
+	entersSent := 0
+	const maxEntersBeforeBackoff = 3
+	const backoffDuration = 30 * time.Second
+	var backoffUntil time.Time
+
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -72,7 +90,12 @@ func AutoApprovals(args []string) {
 	if dryRun {
 		dryTag = " [dry-run]"
 	}
-	fmt.Fprintf(os.Stderr, "auto-approvals%s: monitoring %s (interval=%s, Ctrl+C to stop)\n", dryTag, sessionName, interval)
+	agentTag := agentType
+	if agentTag == "" {
+		agentTag = "auto"
+	}
+	fmt.Fprintf(os.Stderr, "auto-approvals%s: monitoring %s (interval=%s, agent=%s, Ctrl+C to stop)\n",
+		dryTag, sessionName, interval, agentTag)
 
 	for {
 		select {
@@ -80,26 +103,43 @@ func AutoApprovals(args []string) {
 			fmt.Fprintln(os.Stderr, "\nstopped")
 			return
 		case <-ticker.C:
+			// Honour backoff period — don't send Enter while cooling down.
+			if time.Now().Before(backoffUntil) {
+				if verbose {
+					fmt.Fprintf(os.Stderr, "[%s] backoff active (until %s)\n",
+						time.Now().Format("15:04:05"), backoffUntil.Format("15:04:05"))
+				}
+				continue
+			}
+
 			content, _, err := daemon.DaemonShow(sessionName, "buffer", caller)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "[%s] auto-approvals: %v (retrying...)\n", time.Now().Format("15:04:05"), err)
 				continue
 			}
 
-			// Skip empty buffer — pipe may not be ready yet
 			if strings.TrimSpace(content) == "" {
 				continue
 			}
 
-			matched, hasPrompt := DetectApprovalPrompt(content)
+			// Resolve agent type on first non-empty buffer when not specified.
+			if agentType == "" {
+				if inferred := inferAgentFromBuffer(content); inferred != "" {
+					agentType = inferred
+					fmt.Fprintf(os.Stderr, "auto-approvals: detected agent=%s\n", agentType)
+				} else {
+					agentType = "claude"
+					fmt.Fprintf(os.Stderr, "auto-approvals: agent not detected, defaulting to claude\n")
+				}
+			}
 
-			// Reset flag once prompt disappears (agent moved on)
+			matched, hasPrompt := DetectApprovalPromptForAgent(content, agentType)
+
 			if !hasPrompt {
 				sentEnter = false
 				continue
 			}
 
-			// Auto-approve: send Enter once per prompt appearance
 			if !sentEnter {
 				ts := time.Now().Format("15:04:05")
 				if verbose {
@@ -113,6 +153,16 @@ func AutoApprovals(args []string) {
 					}
 				}
 				sentEnter = true
+				entersSent++
+
+				if entersSent >= maxEntersBeforeBackoff {
+					fmt.Fprintf(os.Stderr,
+						"[%s] WARNING: sent %d Enter(s) for %q with no resolution; backing off %s\n",
+						time.Now().Format("15:04:05"), entersSent, matched, backoffDuration)
+					backoffUntil = time.Now().Add(backoffDuration)
+					sentEnter = false
+					entersSent = 0
+				}
 			}
 		}
 	}
