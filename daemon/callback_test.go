@@ -10,7 +10,7 @@ func TestExecuteCallbackHook(t *testing.T) {
 	
 	// Create a mock caller watcher
 	// Note: pipePath and sessionFile don't matter as we won't run the watcher's Run loop
-	callerWatcher := NewWatcher("caller_session", "fake_pipe", "fake_file", 123, nil)
+	callerWatcher := NewWatcher("caller_session", "fake_pipe", "fake_file", 123, "", nil)
 	d.mu.Lock()
 	d.watchers["caller_session"] = callerWatcher
 	d.mu.Unlock()
@@ -35,7 +35,7 @@ func TestExecuteCallbackHook(t *testing.T) {
 			if req.kind != "sendkeys" {
 				t.Errorf("expected kind 'sendkeys', got %q", req.kind)
 			}
-			expectedMsg := "[NOTIFY] target_session is idle"
+			expectedMsg := "[NOTIFY] target_session is idle\n"
 			if req.payload != expectedMsg {
 				t.Errorf("expected payload %q, got %q", expectedMsg, req.payload)
 			}
@@ -63,9 +63,9 @@ func TestResolveCallerSession(t *testing.T) {
 	d := New()
 	
 	// Create two sessions
-	s1 := NewWatcher("session1", "p1", "f1", 1, nil)
-	s2 := NewWatcher("session2", "p2", "f2", 2, nil)
-	
+	s1 := NewWatcher("session1", "p1", "f1", 1, "", nil)
+	s2 := NewWatcher("session2", "p2", "f2", 2, "", nil)
+
 	// Default status is "active", set them to "idle" initially
 	s1.mu.Lock()
 	s1.status = "idle"
@@ -116,14 +116,14 @@ func TestShouldRegisterCallback(t *testing.T) {
 	d := New()
 	
 	// Create sessions
-	s1 := NewWatcher("session1", "p1", "f1", 1, nil)
-	s2 := NewWatcher("session2", "p2", "f2", 2, nil)
-	
+	s1 := NewWatcher("session1", "p1", "f1", 1, "", nil)
+	s2 := NewWatcher("session2", "p2", "f2", 2, "", nil)
+
 	d.mu.Lock()
 	d.watchers["session1"] = s1
 	d.watchers["session2"] = s2
 	d.mu.Unlock()
-	
+
 	// 1. Same session - should NOT register
 	if d.shouldRegisterCallback("session1", "session1") {
 		t.Error("should NOT register callback for same session")
@@ -137,5 +137,37 @@ func TestShouldRegisterCallback(t *testing.T) {
 	// 3. Different sessions - SHOULD register
 	if !d.shouldRegisterCallback("session2", "session1") {
 		t.Error("SHOULD register callback for different sessions")
+	}
+}
+
+// TestShouldRegisterCallback_RejectsHeuristicSelfLoop reproduces issue #19.
+//
+// When the raw caller ID (e.g. wt:<GUID> from an external shell that is NOT a
+// registered watcher) cannot be matched to a watcher, resolveCallerSession
+// falls back to "most recently active watcher". Immediately after send, that
+// watcher IS the target itself. shouldRegisterCallback must refuse this
+// self-loop; otherwise executeCallbackHook writes [NOTIFY] target is idle
+// into the target's own input pipe, and the real external caller receives
+// nothing.
+func TestShouldRegisterCallback_RejectsHeuristicSelfLoop(t *testing.T) {
+	d := New()
+
+	target := NewWatcher("ghostty-71964", "pt", "ft", 1, "", nil)
+	// Simulate "just got a send" — target is the most recently active watcher.
+	target.mu.Lock()
+	target.status = "active"
+	target.lastPollOK = time.Now()
+	target.mu.Unlock()
+
+	d.mu.Lock()
+	d.watchers["ghostty-71964"] = target
+	d.mu.Unlock()
+
+	// Raw caller is an external WT GUID with no matching watcher.
+	// Today resolveCallerSession returns "ghostty-71964" (heuristic) and
+	// shouldRegisterCallback accepts it -> self-loop hook gets registered.
+	if d.shouldRegisterCallback("ghostty-71964", "wt:external-claude-code-guid") {
+		t.Fatalf("self-loop: shouldRegisterCallback accepted a caller that heuristically resolves to the target; " +
+			"this registers callback_session == target and notifies the target's own pipe (issue #19)")
 	}
 }
