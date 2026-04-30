@@ -49,10 +49,7 @@ func (d *Daemon) Run() error {
 	}
 	log.Printf("daemon: discovered %d sessions", len(sessions))
 
-	cfg := &winio.PipeConfig{
-		SecurityDescriptor: "D:(A;;GA;;;CO)", // Creator Owner only
-	}
-	listener, err := winio.ListenPipe(IPCPipePath(), cfg)
+	listener, err := winio.ListenPipe(IPCPipePath(), nil)
 	if err != nil {
 		return fmt.Errorf("listen pipe: %w", err)
 	}
