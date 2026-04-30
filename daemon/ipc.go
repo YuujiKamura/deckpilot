@@ -150,21 +150,22 @@ func (d *Daemon) handleSend(parts []string) string {
 	}
 
 	// Phase 1.5: wait until the text is visible in the TUI buffer.
-	// This replaces the broken pipe.SendWithSubmit ACK model (whose ACK meant
-	// "CP server received" not "TUI consumed"). When our text appears in the
-	// rendered buffer, we know the TUI has actually picked it up and the
-	// following \r keystroke will land on the right state.
+	// The TUI may word-wrap long messages (inserting \n within the rendered
+	// text), so we can't use Contains(buf, msg) directly. Instead probe for a
+	// short leading token — the first chunk of non-space chars up to 24 runes
+	// — which the TUI will render contiguously regardless of wrap boundary.
+	probe := visibilityProbe(msg)
 	textVisible := false
 	for i := 0; i < 20; i++ { // up to ~600ms
 		buf, _ := pipe.Tail(pipePath, 20)
-		if strings.Contains(buf, msg) {
+		if probe == "" || strings.Contains(buf, probe) {
 			textVisible = true
 			break
 		}
 		time.Sleep(30 * time.Millisecond)
 	}
 	if !textVisible {
-		return fmt.Sprintf("ERR|text_not_visible|phase1_timeout\n")
+		return "ERR|text_not_visible|phase1_timeout\n"
 	}
 
 	// Phase 2: submit via RAW_INPUT(\r) as a standalone key event.
