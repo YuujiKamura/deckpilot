@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"log"
-	"os"
 	"sync"
 	"time"
 
@@ -99,12 +98,7 @@ func (w *Watcher) Run(ctx context.Context) {
 		case <-ticker.C:
 			w.poll()
 			if w.Status() == "dead" {
-				if w.sessionFile != "" {
-					if err := os.Remove(w.sessionFile); err == nil {
-						log.Printf("watcher: removed session file for dead session %q", w.name)
-					}
-				}
-				log.Printf("watcher: session %q is dead, stopping", w.name)
+				log.Printf("watcher: session %q is dead (pipe error), stopping watcher", w.name)
 				return
 			}
 		}
