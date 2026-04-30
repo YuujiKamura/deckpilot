@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"strconv"
 	"strings"
 	"time"
 
@@ -44,6 +43,8 @@ func (d *Daemon) handleConn(conn net.Conn) {
 		resp = d.handleOutput(parts)
 	case "HISTORY":
 		resp = d.handleHistory(parts)
+	case "STATUS":
+		resp = d.handleStatus(parts)
 	default:
 		resp = fmt.Sprintf("ERR|unknown command: %s\n", cmd)
 	}
@@ -100,17 +101,24 @@ func (d *Daemon) handleOutput(parts []string) string {
 		return "ERR|usage: OUTPUT|<name>|<lines>\n"
 	}
 	name := parts[1]
-	lines, err := strconv.Atoi(parts[2])
-	if err != nil {
-		return fmt.Sprintf("ERR|bad lines: %v\n", err)
+	// lines parameter ignored — watcher caches last TAIL|50
+
+	// Use watcher cache first (no extra pipe hit)
+	if w, ok := d.getWatcher(name); ok {
+		content := w.LastContent()
+		if content != "" {
+			encoded := base64.StdEncoding.EncodeToString([]byte(content))
+			return fmt.Sprintf("OK|%s\n", encoded)
+		}
 	}
 
+	// Fallback: direct pipe call
 	pipePath, ok := d.resolvePipePath(name)
 	if !ok {
 		return fmt.Sprintf("ERR|session not found: %s\n", name)
 	}
 
-	content, err := pipe.Tail(pipePath, lines)
+	content, err := pipe.Tail(pipePath, 50)
 	if err != nil {
 		return fmt.Sprintf("ERR|tail: %v\n", err)
 	}
@@ -135,6 +143,26 @@ func (d *Daemon) handleHistory(parts []string) string {
 	}
 	encoded := base64.StdEncoding.EncodeToString([]byte(content))
 	return fmt.Sprintf("OK|%s\n", encoded)
+}
+
+func (d *Daemon) handleStatus(parts []string) string {
+	if len(parts) < 2 {
+		return "ERR|usage: STATUS|<name>\n"
+	}
+	name := parts[1]
+
+	d.mu.Lock()
+	n, ok := d.lastNotify[name]
+	d.mu.Unlock()
+	if !ok {
+		// No notification yet, check watcher directly
+		w, wok := d.getWatcher(name)
+		if !wok {
+			return fmt.Sprintf("ERR|session not found: %s\n", name)
+		}
+		return fmt.Sprintf("OK|%s|%s|%d\n", name, w.Status(), 0)
+	}
+	return fmt.Sprintf("OK|%s|%s|%d\n", n.SessionName, n.Status, n.StableFor)
 }
 
 // --- Client helpers ---
