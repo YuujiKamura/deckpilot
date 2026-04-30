@@ -28,8 +28,9 @@ var (
 	hangDetectUserHome   = os.UserHomeDir
 	hangDetectNow        = time.Now
 
-	hangDetectDaemonListWithContext = daemonListWithContext
-	hangDetectPipeTailWithContext   = tailPipeWithContext
+	hangDetectDaemonListWithContext  = daemonListWithContext
+	hangDetectPipeTailWithContext    = tailPipeWithContext
+	hangDetectPipeHistoryWithContext = historyPipeWithContext
 )
 
 const hangDetectActionTimeout = 3 * time.Second
@@ -38,10 +39,13 @@ type hangDetectSessionEntry struct {
 	Name     string `json:"name"`
 	PID      int    `json:"pid"`
 	PipePath string `json:"pipe_path"`
+	WsURL    string `json:"ws_url,omitempty"`
 	// Status mirrors the Watcher's current status string. The watcher
 	// sets this to "stalled" when IsHungAppWindow(hwnd) is TRUE, which
 	// probeOnce consults as its OS-authoritative fast path.
-	Status string `json:"status"`
+	Status     string `json:"status"`
+	AppRuntime string `json:"app_runtime"`
+	Uptime     string `json:"uptime"`
 }
 
 // HangDetect is the CLI command: deckpilot hang-detect <session> [flags]
@@ -360,40 +364,102 @@ func snapshotActionForSession(sessionName string) daemon.HangAction {
 			sanitizeForFilenameCmd(info.SessionName))
 		path := filepath.Join(baseDir, filename)
 
-		header := fmt.Sprintf(
-			"# deckpilot hang snapshot\n"+
-				"# session: %s\n"+
-				"# root_pid: %d\n"+
-				"# process_count: %d\n"+
-				"# cpu_percent: %.2f\n"+
-				"# stall_since: %s\n"+
-				"# detected_at: %s\n"+
-				"# --- buffer tail (%d lines) ---\n",
-			info.SessionName, info.RootPID, info.ProcessCount,
-			info.CPUPercent, info.StallSince,
-			ts.Format(time.RFC3339), tailLines)
+		// Pull the session's daemon-side metadata so the dump records
+		// app_runtime / uptime / pipe_path. resolveSessionEntry is
+		// best-effort: a missing entry must not block the dump (the
+		// hang itself may have torn the session out of LIST).
+		entry, entryErr := resolveSessionEntry(ctx, sessionName)
 
-		body := ""
-		pipePath, err := resolveSessionPipePathWithContext(ctx, sessionName)
-		if err != nil {
-			body = fmt.Sprintf("[snapshot note: %v]\n", err)
+		// Tail first (most-recent context, easiest to read), then full
+		// history below. Either may be empty if the pipe is unreachable.
+		var tail, history string
+		var tailErr, historyErr error
+		if entryErr == nil && entry.PipePath != "" {
+			tail, tailErr = hangDetectPipeTailWithContext(ctx, entry.PipePath, tailLines)
+			history, historyErr = hangDetectPipeHistoryWithContext(ctx, entry.PipePath)
+		}
+
+		// Agent inference: prefer full history (more banner lines to
+		// match against); fall back to tail. Keep the empty result as
+		// "unknown" rather than silently defaulting to claude — this
+		// dump is the resume hint, not an auto-approve decision.
+		probeBuf := history
+		if probeBuf == "" {
+			probeBuf = tail
+		}
+		agent := inferAgentFromBuffer(probeBuf)
+		if agent == "" {
+			agent = "unknown"
+		}
+
+		var hb strings.Builder
+		fmt.Fprintln(&hb, "# deckpilot hang snapshot v2")
+		fmt.Fprintf(&hb, "# session: %s\n", info.SessionName)
+		fmt.Fprintf(&hb, "# root_pid: %d\n", info.RootPID)
+		fmt.Fprintf(&hb, "# process_count: %d\n", info.ProcessCount)
+		fmt.Fprintf(&hb, "# cpu_percent: %.2f\n", info.CPUPercent)
+		fmt.Fprintf(&hb, "# stall_since: %s\n", info.StallSince)
+		fmt.Fprintf(&hb, "# detected_at: %s\n", ts.Format(time.RFC3339))
+		fmt.Fprintf(&hb, "# inferred_agent: %s\n", agent)
+		if entryErr == nil {
+			fmt.Fprintf(&hb, "# app_runtime: %s\n", entry.AppRuntime)
+			fmt.Fprintf(&hb, "# uptime: %s\n", entry.Uptime)
+			fmt.Fprintf(&hb, "# status: %s\n", entry.Status)
+			fmt.Fprintf(&hb, "# pipe_path: %s\n", entry.PipePath)
+			if entry.WsURL != "" {
+				fmt.Fprintf(&hb, "# ws_url: %s\n", entry.WsURL)
+			}
 		} else {
-			tail, err := hangDetectPipeTailWithContext(ctx, pipePath, tailLines)
-			if err != nil {
-				body = fmt.Sprintf("[snapshot error: tail failed: %v]\n", err)
-			} else {
-				body = tail
+			fmt.Fprintf(&hb, "# session_metadata_error: %v\n", entryErr)
+		}
+		fmt.Fprintln(&hb, "# resume_hint: read the full history below to recover the in-flight task,")
+		fmt.Fprintln(&hb, "#              then `deckpilot launch <inferred_agent> \"<continued prompt>\" --cwd <see buffer>`")
+		fmt.Fprintf(&hb, "# --- buffer tail (%d lines) ---\n", tailLines)
+
+		var bb strings.Builder
+		switch {
+		case entryErr != nil:
+			fmt.Fprintf(&bb, "[snapshot note: %v]\n", entryErr)
+		case tailErr != nil:
+			fmt.Fprintf(&bb, "[snapshot error: tail failed: %v]\n", tailErr)
+		default:
+			bb.WriteString(tail)
+			if !strings.HasSuffix(tail, "\n") {
+				bb.WriteString("\n")
 			}
 		}
 
-		if err := os.WriteFile(path, []byte(header+body), 0o644); err != nil {
+		// History section: only emit when we got something. A
+		// best-effort failure stays out of the dump — the tail above
+		// is enough for triage, and an "[error]" line in the history
+		// block would only confuse readers.
+		if entryErr == nil {
+			bb.WriteString("# --- full history (HISTORY|0) ---\n")
+			switch {
+			case historyErr != nil:
+				fmt.Fprintf(&bb, "[history unavailable: %v]\n", historyErr)
+			case history == "":
+				bb.WriteString("[history empty]\n")
+			default:
+				bb.WriteString(history)
+				if !strings.HasSuffix(history, "\n") {
+					bb.WriteString("\n")
+				}
+			}
+		}
+
+		if err := os.WriteFile(path, []byte(hb.String()+bb.String()), 0o644); err != nil {
 			return fmt.Errorf("ActionSnapshot: write %s: %w", path, err)
 		}
 		return nil
 	}
 }
 
-func resolveSessionPipePathWithContext(ctx context.Context, sessionName string) (string, error) {
+// resolveSessionEntry returns the full LIST entry for the named
+// session, including AppRuntime / Uptime / Status fields that snapshot
+// v2 records as resume hints. Reuses the same context-bounded LIST
+// path as resolveSessionPipePathWithContext.
+func resolveSessionEntry(ctx context.Context, sessionName string) (hangDetectSessionEntry, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -401,17 +467,14 @@ func resolveSessionPipePathWithContext(ctx context.Context, sessionName string) 
 	defer cancel()
 	all, err := listSessionsForHangDetectWithContext(ctx)
 	if err != nil {
-		return "", err
+		return hangDetectSessionEntry{}, err
 	}
 	for _, e := range all {
 		if e.Name == sessionName {
-			if e.PipePath == "" {
-				return "", fmt.Errorf("session %q has no pipe path", sessionName)
-			}
-			return e.PipePath, nil
+			return e, nil
 		}
 	}
-	return "", fmt.Errorf("session not found: %s", sessionName)
+	return hangDetectSessionEntry{}, fmt.Errorf("session not found: %s", sessionName)
 }
 
 func listSessionsForHangDetectWithContext(ctx context.Context) ([]hangDetectSessionEntry, error) {
@@ -439,6 +502,21 @@ func daemonListWithContext(ctx context.Context) (string, error) {
 
 func tailPipeWithContext(ctx context.Context, pipePath string, lines int) (string, error) {
 	resp, err := sendRecvPipeWithContext(ctx, pipePath, fmt.Sprintf("TAIL|%d", lines))
+	if err != nil {
+		return "", err
+	}
+	if errMsg, ok := pipe.IsError(resp); ok {
+		return "", fmt.Errorf("server: %s", errMsg)
+	}
+	return pipe.StripTailHeader(resp), nil
+}
+
+// historyPipeWithContext fetches the full scrollback via HISTORY|0.
+// Used by snapshot v2 so a hang dump preserves enough context for a
+// human or another agent to reconstruct what the session was doing
+// before it stopped responding.
+func historyPipeWithContext(ctx context.Context, pipePath string) (string, error) {
+	resp, err := sendRecvPipeWithContext(ctx, pipePath, "HISTORY|0")
 	if err != nil {
 		return "", err
 	}
