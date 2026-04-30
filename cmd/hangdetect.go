@@ -23,7 +23,10 @@ import (
 //	--stall-seconds N     seconds of unchanged buffer (default 60)
 //	--probe-interval DUR  gap between probes (default 5s)
 //	--sample-interval DUR CPU sample window (default 500ms, must be < probe)
-//	--on-hang ACTION      notify | ctrl-c | kill-child | kill-session (default notify)
+//	--on-hang ACTION      notify | snapshot | ctrl-c | tiered (default notify)
+//	                      tiered = notify → snapshot → ctrl-c in sequence.
+//	                      Destructive actions (kill) are intentionally
+//	                      NOT exposed — see issue #26 addendum.
 //	--include-children    default true; --no-include-children to disable
 //	--once                run one probe and exit (diagnostic)
 func HangDetect(args []string) {
@@ -175,7 +178,7 @@ func hangUsageFatal(format string, a ...any) {
 	fmt.Fprintln(os.Stderr,
 		"usage: deckpilot hang-detect <session> [--cpu-threshold N] [--stall-seconds N] "+
 			"[--probe-interval DUR] [--sample-interval DUR] "+
-			"[--on-hang notify|ctrl-c|kill-child|kill-session] "+
+			"[--on-hang notify|snapshot|ctrl-c|tiered] "+
 			"[--include-children | --no-include-children] [--once]")
 	os.Exit(1)
 }
@@ -230,23 +233,39 @@ func fetchLastAct(sessionName string) time.Time {
 	return time.Now()
 }
 
-// pickHangAction returns a HangAction by name. Per-action dependencies
-// (Daemon ref for ctrl-c, ProcessLister for kill-child) are injected
-// from package-level defaults.
+// pickHangAction returns a HangAction by name.
+//
+// Design (issue #26 addendum, 2026-04-19): the CLI never auto-kills a
+// hung agent. Destructive termination loses the agent's reasoning
+// chain and any queued input, which is strictly worse than the hung
+// state the operator could have inspected manually. The only actions
+// exposed here are strictly non-destructive:
+//
+//	notify   — Lv1: log + supervisor ping
+//	snapshot — Lv2: dump PTY tail to ~/.deckpilot/hang-dumps/
+//	ctrl-c   — Lv3: soft interrupt, agent may recover on its own
+//	tiered   — runs notify + snapshot + ctrl-c in sequence so the
+//	           evidence is preserved before the interrupt might
+//	           change screen state
+//
+// If an operator truly needs to terminate the process, `Stop-Process`
+// is one shell invocation away — automating that loses more than it
+// gains.
 func pickHangAction(name, _ string) (daemon.HangAction, error) {
 	switch name {
 	case "notify":
-		// Notify doesn't need daemon access; pass nil to keep the CLI
-		// daemon-process-independent (the action runs client-side).
 		return daemon.ActionNotify(nil), nil
+	case "snapshot":
+		return daemon.ActionSnapshot(nil, "", 0), nil
 	case "ctrl-c":
-		return nil, fmt.Errorf(
-			"on-hang=ctrl-c requires an in-daemon detector; run as `deckpilot daemon` with config (issue #26 M3)")
-	case "kill-child":
-		return daemon.ActionKillChild(daemon.SystemProcessLister{}), nil
-	case "kill-session":
-		return daemon.ActionKillSession(), nil
+		return daemon.ActionSendCtrlC(nil), nil
+	case "tiered":
+		return daemon.ChainActions(
+			daemon.ActionNotify(nil),
+			daemon.ActionSnapshot(nil, "", 0),
+			daemon.ActionSendCtrlC(nil),
+		), nil
 	default:
-		return nil, fmt.Errorf("unknown --on-hang action %q (valid: notify, ctrl-c, kill-child, kill-session)", name)
+		return nil, fmt.Errorf("unknown --on-hang action %q (valid: notify, snapshot, ctrl-c, tiered)", name)
 	}
 }

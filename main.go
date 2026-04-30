@@ -59,9 +59,9 @@ Commands:
   list                                            List active sessions (alias: ls)
   launch           <agent> <prompt...> [--cwd D]  Start agent in new Ghostty window
   watch            [session] [--once] [--json]    Monitor sessions (view-only, no approval)
-  hang-detect      <session> [--cpu-threshold N]  Detect agent hang by CPU + stall
+  hang-detect      <session> [--cpu-threshold N]  Non-destructive hang monitor
                    [--stall-seconds N] [--probe-interval DUR]
-                   [--on-hang notify|ctrl-c|kill-child|kill-session]
+                   [--on-hang notify|snapshot|ctrl-c|tiered]
                    [--include-children|--no-include-children] [--once]
   auto-approvals   <session> [--interval 2s]      Auto-approve prompts (alias: approve)
                    [--dry-run] [--verbose]
