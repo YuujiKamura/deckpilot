@@ -260,6 +260,70 @@ func TestDeletedCommands(t *testing.T) {
 	}
 }
 
+func TestLaunchWithPrompt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping E2E test in short mode")
+	}
+
+	marker := "launch_prompt_test_marker_" + strconv.FormatInt(time.Now().Unix(), 10)
+	// Launch with a prompt that echoes a marker.
+	// We use "claude" agent which is defined in agents.go.
+	// Since we don't want to actually run Claude, we might need a dummy agent or
+	// rely on the fact that 'claude' command might not exist on the test machine,
+	// but the test 'launchTestSession' skips if Ghostty is missing.
+	
+	// Wait, if I use 'claude' agent, it tries to run 'claude' command.
+	// For E2E test, maybe I should check if 'claude' or 'codex' is available.
+	// Actually, the existing tests use 'claude' in launchTestSession but it
+	// seems to work (or skip).
+	
+	cmd := exec.Command(deckpilotExe, "launch", "claude", "echo "+marker)
+	cmd.Dir = `C:\Users\yuuji\deckpilot`
+	
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		stderr := ""
+		if ee, ok := err.(*exec.ExitError); ok {
+			stderr = string(ee.Stderr)
+		}
+		if strings.Contains(string(out)+stderr, "ghostty not found") {
+			t.Skip("Ghostty not found")
+		}
+		// If 'claude' is not found, it's an agent error but deckpilot might still
+		// have "sent" the prompt to the shell before claude failed to start,
+		// OR it might have failed to find claude.
+		t.Logf("launch failed: %v\noutput: %s", err, out)
+	}
+
+	sessionName := strings.TrimSpace(string(out))
+	if sessionName == "" {
+		t.Fatal("launch returned empty session name")
+	}
+	
+	// Ghostty PID for cleanup
+	pid := findGhosttyPID(t, sessionName)
+	defer func() {
+		if pid > 0 {
+			exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/F").Run()
+		}
+	}()
+
+	t.Logf("launched session: %s", sessionName)
+
+	// Wait for the prompt to be processed and marker to appear in buffer
+	time.Sleep(10 * time.Second)
+
+	showCmd := exec.Command(deckpilotExe, "show", sessionName)
+	showOut, err := showCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("show failed: %v\n%s", err, showOut)
+	}
+
+	if !strings.Contains(string(showOut), marker) {
+		t.Errorf("buffer does not contain marker %q\ngot:\n%s", marker, showOut)
+	}
+}
+
 // TestCleanup runs last (alphabetically after other tests) and kills the shared Ghostty.
 // Go runs tests in the order they appear in the file, so this being last is intentional.
 func TestCleanup(t *testing.T) {
