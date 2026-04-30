@@ -4,14 +4,13 @@
 
 PATTERNS='C:\\Users\\|C:/Users/|/c/Users/|/home/[a-z]|/Users/[A-Z]|%USERPROFILE%|%HOMEPATH%|%APPDATA%|\\マイドライブ|H:/マイドライブ'
 
-# Exclude this hook file itself and go.sum
-DIFF=$(git diff --cached --diff-filter=ACMR -- ':!.githooks/*' ':!go.sum' ':!go.mod')
+# Only check ADDED lines, exclude hook file itself
+ADDED=$(git diff --cached --diff-filter=ACMR -- ':!.githooks/*' ':!go.sum' ':!go.mod' | grep '^+' | grep -v '^+++')
 
-if echo "$DIFF" | grep -qE "$PATTERNS"; then
-    echo "ERROR: Staged changes contain hardcoded paths or PII."
+if echo "$ADDED" | grep -qE "$PATTERNS"; then
+    echo "ERROR: Staged ADDED lines contain hardcoded paths."
     echo ""
-    echo "Detected patterns:"
-    echo "$DIFF" | grep -n -E "$PATTERNS" | head -15
+    echo "$ADDED" | grep -E "$PATTERNS" | head -15
     echo ""
     echo "Replace with dynamic resolution (os.UserHomeDir, runtime.Caller, os.Getenv, etc.)"
     exit 1
