@@ -344,39 +344,42 @@ func (d *Daemon) ListIdleHooks() []IdleHook {
 	return result
 }
 
-// executeStatusHooks executes all registered hooks for status transitions
+// executeStatusHooks fires hooks matching the given status notification.
+//
+// Collection and one-time pruning happen under a single lock pass: a OneTime
+// hook is removed from d.idleHooks *before* any goroutine runs, so a second
+// status transition arriving on another goroutine cannot observe the hook and
+// re-fire it. This invariant is locked by TestHookInvariant_OneTimeFires
+// ExactlyOnce. The previous implementation deferred removal through a 100ms
+// goroutine, which allowed back-to-back notifications to double-fire.
 func (d *Daemon) executeStatusHooks(notification BufferNotification) {
 	d.mu.Lock()
-	hooks := make([]IdleHook, len(d.idleHooks))
-	copy(hooks, d.idleHooks)
-	d.mu.Unlock()
-
-	var oneTimeHooks []IdleHook // collect one-time hooks for removal
-
-	for _, hook := range hooks {
-		// Apply session filter if specified
+	toFire := make([]IdleHook, 0, len(d.idleHooks))
+	remaining := make([]IdleHook, 0, len(d.idleHooks))
+	for _, hook := range d.idleHooks {
 		if hook.SessionFilter != "" && hook.SessionFilter != notification.SessionName {
+			remaining = append(remaining, hook)
 			continue
 		}
-
-		if hook.OneTime {
-			oneTimeHooks = append(oneTimeHooks, hook)
+		toFire = append(toFire, hook)
+		if !hook.OneTime {
+			remaining = append(remaining, hook)
 		}
+	}
+	prunedOneTime := len(d.idleHooks) - len(remaining)
+	d.idleHooks = remaining
+	d.mu.Unlock()
 
+	if prunedOneTime > 0 {
+		log.Printf("daemon: pruned %d one-time hook(s) atomically before fire", prunedOneTime)
+	}
+
+	for _, hook := range toFire {
 		go func(h IdleHook, n BufferNotification) {
 			if err := d.executeHook(h, n); err != nil {
 				log.Printf("daemon: hook execution error: %v", err)
 			}
 		}(hook, notification)
-	}
-
-	// Remove one-time hooks after execution
-	if len(oneTimeHooks) > 0 {
-		go func() {
-			// Small delay to ensure hook execution completes
-			time.Sleep(100 * time.Millisecond)
-			d.removeOneTimeHooks(oneTimeHooks)
-		}()
 	}
 }
 
@@ -525,42 +528,9 @@ func (d *Daemon) executeCallbackHook(hook IdleHook, notification BufferNotificat
 	return nil
 }
 
-// removeOneTimeHooks removes specified one-time hooks from the hook list
-func (d *Daemon) removeOneTimeHooks(hooksToRemove []IdleHook) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	var filteredHooks []IdleHook
-	for _, existing := range d.idleHooks {
-		shouldRemove := false
-		for _, toRemove := range hooksToRemove {
-			if d.hookEquals(existing, toRemove) {
-				shouldRemove = true
-				break
-			}
-		}
-		if !shouldRemove {
-			filteredHooks = append(filteredHooks, existing)
-		}
-	}
-
-	removed := len(d.idleHooks) - len(filteredHooks)
-	d.idleHooks = filteredHooks
-
-	if removed > 0 {
-		log.Printf("daemon: removed %d one-time hook(s)", removed)
-	}
-}
-
-// hookEquals compares two hooks for equality (used for removal)
-func (d *Daemon) hookEquals(a, b IdleHook) bool {
-	return a.Type == b.Type &&
-		a.SessionFilter == b.SessionFilter &&
-		a.CallbackSession == b.CallbackSession &&
-		a.Message == b.Message &&
-		a.TargetSession == b.TargetSession &&
-		a.URL == b.URL
-}
+// (removeOneTimeHooks / hookEquals removed: one-time pruning now happens
+// atomically inside executeStatusHooks, so the equality-matching removal
+// helper is no longer needed.)
 
 // snapshotSessions returns a point-in-time view of all watched sessions,
 // suitable to pass into the pure policy helpers in policy.go. Taking the
