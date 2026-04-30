@@ -28,7 +28,7 @@ func Watch(args []string) {
 	signal.Notify(sig, os.Interrupt)
 
 	lastHash := ""
-	sentEnter := false // true after we send Enter; reset when "Action Required" disappears
+	sentEnter := false // true after we send Enter; reset when prompt disappears
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
@@ -47,16 +47,21 @@ func Watch(args []string) {
 			}
 
 			hash := fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
-			hasAction := strings.Contains(content, "Action Required")
+			hasPrompt := strings.Contains(content, "Action Required") ||
+				strings.Contains(content, "Enter to select") ||
+				strings.Contains(content, "Y/n") ||
+				strings.Contains(content, "Allow") ||
+				strings.Contains(content, "trust") ||
+				strings.Contains(content, "Waiting")
 
-			// Reset flag once "Action Required" disappears (agent moved on)
-			if !hasAction {
+			// Reset flag once prompt disappears (agent moved on)
+			if !hasPrompt {
 				sentEnter = false
 			}
 
-			// Auto-approve: send Enter once per "Action Required" appearance
-			if hasAction && !sentEnter {
-				fmt.Fprintf(os.Stderr, "[%s] Action Required detected, sending Enter\n", time.Now().Format("15:04:05"))
+			// Auto-approve: send Enter once per prompt appearance
+			if hasPrompt && !sentEnter {
+				fmt.Fprintf(os.Stderr, "[%s] Prompt detected, sending Enter\n", time.Now().Format("15:04:05"))
 				if _, err := daemon.DaemonSend(name, "", caller); err != nil {
 					fmt.Fprintf(os.Stderr, "watch: send failed: %v\n", err)
 				}
