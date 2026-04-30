@@ -28,18 +28,23 @@ func newSnapshotRig(t *testing.T) *snapshotTestRig {
 	oldHistory := hangDetectPipeHistoryWithContext
 	oldHome := hangDetectUserHome
 	oldNow := hangDetectNow
+	oldMetaHome := launchMetaUserHome
 	t.Cleanup(func() {
 		hangDetectDaemonListWithContext = oldList
 		hangDetectPipeTailWithContext = oldTail
 		hangDetectPipeHistoryWithContext = oldHistory
 		hangDetectUserHome = oldHome
 		hangDetectNow = oldNow
+		launchMetaUserHome = oldMetaHome
 	})
 
 	hangDetectUserHome = func() (string, error) { return r.tempHome, nil }
 	hangDetectNow = func() time.Time {
 		return time.Date(2026, 4, 19, 15, 4, 5, 0, time.UTC)
 	}
+	// Snapshot reads launch-meta from the same home — keep them in
+	// sync so a test can write a meta and the dump finds it.
+	launchMetaUserHome = func() (string, error) { return r.tempHome, nil }
 	return r
 }
 
@@ -155,6 +160,102 @@ func TestSnapshotActionForSession_V2RecordsResumeContext(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("dump missing %q\nfull dump:\n%s", want, text)
 		}
+	}
+}
+
+// TestSnapshotActionForSession_V2EmitsResumeCommandFromLaunchMeta is
+// the stage-2 contract: when a session was started via `deckpilot
+// launch`, snapshot v2 must emit an exact `# resume_command:` line so
+// an operator can copy-paste it into a fresh shell and respawn the
+// agent in the right cwd with the original prompt — no buffer
+// spelunking required.
+func TestSnapshotActionForSession_V2EmitsResumeCommandFromLaunchMeta(t *testing.T) {
+	r := newSnapshotRig(t)
+
+	// Pre-populate launch-meta as if `deckpilot launch gemini ...`
+	// had recorded it before the hang.
+	if err := WriteLaunchMeta(LaunchMeta{
+		SessionName: "ghostty-7064",
+		Agent:       "gemini",
+		Cwd:         `C:\Users\yuuji\ghostty-win`,
+		Prompt:      "fix issue #42 with the new approach",
+		LaunchedAt:  time.Date(2026, 4, 26, 17, 30, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("seed meta: %v", err)
+	}
+
+	hangDetectDaemonListWithContext = func(context.Context) (string, error) {
+		return `[{
+		  "name": "ghostty-7064",
+		  "pid": 7064,
+		  "pipe_path": "\\\\.\\pipe\\ghostty-winui3-ghostty-7064-7064",
+		  "app_runtime": "winui3",
+		  "status": "stalled",
+		  "uptime": "19m03s"
+		}]`, nil
+	}
+	hangDetectPipeTailWithContext = func(context.Context, string, int) (string, error) {
+		return "tail body\n", nil
+	}
+	hangDetectPipeHistoryWithContext = func(context.Context, string) (string, error) {
+		return "Welcome to Gemini CLI\nworking on issue 42\n", nil
+	}
+
+	info := daemon.HangInfo{SessionName: "ghostty-7064", RootPID: 7064}
+	if err := snapshotActionForSession("ghostty-7064")(context.Background(), info); err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	body, err := os.ReadFile(r.dumpPath("ghostty-7064"))
+	if err != nil {
+		t.Fatalf("read dump: %v", err)
+	}
+	text := string(body)
+	for _, want := range []string{
+		"# launched_agent: gemini",
+		`# launched_cwd: C:\Users\yuuji\ghostty-win`,
+		"# launched_at: 2026-04-26T17:30:00Z",
+		"# original_prompt: fix issue #42 with the new approach",
+		// resume_command must quote the cwd (backslash) and the
+		// multi-word prompt so a copy-paste survives the shell.
+		`# resume_command: deckpilot launch gemini "fix issue #42 with the new approach" --cwd "C:\Users\yuuji\ghostty-win"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("dump missing %q\nfull dump:\n%s", want, text)
+		}
+	}
+	// Without launch-meta, snapshot prints a "launched_by: external"
+	// line. With launch-meta, that line must NOT appear.
+	if strings.Contains(text, "launched_by: external") {
+		t.Errorf("external marker leaked even though launch-meta was present:\n%s", text)
+	}
+}
+
+// TestSnapshotActionForSession_V2NoLaunchMetaShowsExternalMarker
+// pins the inverse: a session opened manually (no meta file) gets the
+// "external" marker plus the generic resume_hint.
+func TestSnapshotActionForSession_V2NoLaunchMetaShowsExternalMarker(t *testing.T) {
+	r := newSnapshotRig(t)
+
+	hangDetectDaemonListWithContext = func(context.Context) (string, error) {
+		return `[{"name":"ghostty-99","pid":99,"pipe_path":"p","app_runtime":"winui3","status":"idle","uptime":"5s"}]`, nil
+	}
+	hangDetectPipeTailWithContext = func(context.Context, string, int) (string, error) {
+		return "", nil
+	}
+	hangDetectPipeHistoryWithContext = func(context.Context, string) (string, error) {
+		return "", nil
+	}
+
+	info := daemon.HangInfo{SessionName: "ghostty-99", RootPID: 99}
+	if err := snapshotActionForSession("ghostty-99")(context.Background(), info); err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	text, _ := os.ReadFile(r.dumpPath("ghostty-99"))
+	if !strings.Contains(string(text), "launched_by: external") {
+		t.Errorf("expected external marker; got:\n%s", text)
+	}
+	if strings.Contains(string(text), "resume_command:") {
+		t.Errorf("must not synthesize a resume_command without launch-meta:\n%s", text)
 	}
 }
 

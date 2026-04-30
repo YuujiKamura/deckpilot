@@ -92,6 +92,19 @@ func Launch(args []string) {
 	}
 	fmt.Fprintf(os.Stderr, "session: %s\n", sessionName)
 
+	// Persist launch metadata so the hang-detect snapshot action can
+	// emit an exact `deckpilot launch ... --cwd ...` resume command if
+	// this session ever stops responding. Best-effort: a write failure
+	// here would only cost the resume hint, not the launch itself.
+	if metaErr := WriteLaunchMeta(LaunchMeta{
+		SessionName: sessionName,
+		Agent:       agentName,
+		Cwd:         cwd,
+		Prompt:      prompt,
+	}); metaErr != nil {
+		fmt.Fprintf(os.Stderr, "launch-meta: %v (continuing)\n", metaErr)
+	}
+
 	// Wait for shell prompt (give the terminal a moment to render)
 	time.Sleep(2 * time.Second)
 

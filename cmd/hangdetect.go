@@ -387,10 +387,16 @@ func snapshotActionForSession(sessionName string) daemon.HangAction {
 		if probeBuf == "" {
 			probeBuf = tail
 		}
-		agent := inferAgentFromBuffer(probeBuf)
-		if agent == "" {
-			agent = "unknown"
+		inferred := inferAgentFromBuffer(probeBuf)
+		if inferred == "" {
+			inferred = "unknown"
 		}
+
+		// Pull persisted launch metadata if `deckpilot launch` was the
+		// one who started this session. Best-effort: missing file is
+		// the common case for sessions opened manually, and a parse
+		// error must not stop the dump.
+		meta, metaOK, metaErr := ReadLaunchMeta(sessionName)
 
 		var hb strings.Builder
 		fmt.Fprintln(&hb, "# deckpilot hang snapshot v2")
@@ -400,7 +406,7 @@ func snapshotActionForSession(sessionName string) daemon.HangAction {
 		fmt.Fprintf(&hb, "# cpu_percent: %.2f\n", info.CPUPercent)
 		fmt.Fprintf(&hb, "# stall_since: %s\n", info.StallSince)
 		fmt.Fprintf(&hb, "# detected_at: %s\n", ts.Format(time.RFC3339))
-		fmt.Fprintf(&hb, "# inferred_agent: %s\n", agent)
+		fmt.Fprintf(&hb, "# inferred_agent: %s\n", inferred)
 		if entryErr == nil {
 			fmt.Fprintf(&hb, "# app_runtime: %s\n", entry.AppRuntime)
 			fmt.Fprintf(&hb, "# uptime: %s\n", entry.Uptime)
@@ -412,8 +418,23 @@ func snapshotActionForSession(sessionName string) daemon.HangAction {
 		} else {
 			fmt.Fprintf(&hb, "# session_metadata_error: %v\n", entryErr)
 		}
-		fmt.Fprintln(&hb, "# resume_hint: read the full history below to recover the in-flight task,")
-		fmt.Fprintln(&hb, "#              then `deckpilot launch <inferred_agent> \"<continued prompt>\" --cwd <see buffer>`")
+		switch {
+		case metaErr != nil:
+			fmt.Fprintf(&hb, "# launch_metadata_error: %v\n", metaErr)
+			fmt.Fprintln(&hb, "# resume_hint: read the full history below to recover the in-flight task,")
+			fmt.Fprintln(&hb, "#              then `deckpilot launch <inferred_agent> \"<continued prompt>\" --cwd <see buffer>`")
+		case metaOK:
+			fmt.Fprintf(&hb, "# launched_agent: %s\n", meta.Agent)
+			fmt.Fprintf(&hb, "# launched_cwd: %s\n", meta.Cwd)
+			fmt.Fprintf(&hb, "# launched_at: %s\n", meta.LaunchedAt.Format(time.RFC3339))
+			fmt.Fprintf(&hb, "# original_prompt: %s\n", oneLineForHeader(meta.Prompt))
+			fmt.Fprintf(&hb, "# resume_command: deckpilot launch %s %s --cwd %s\n",
+				meta.Agent, shellQuote(meta.Prompt), shellQuote(meta.Cwd))
+		default:
+			fmt.Fprintln(&hb, "# launched_by: external (no launch-meta record — session was not started by `deckpilot launch`)")
+			fmt.Fprintln(&hb, "# resume_hint: read the full history below to recover the in-flight task,")
+			fmt.Fprintln(&hb, "#              then `deckpilot launch <inferred_agent> \"<continued prompt>\" --cwd <see buffer>`")
+		}
 		fmt.Fprintf(&hb, "# --- buffer tail (%d lines) ---\n", tailLines)
 
 		var bb strings.Builder
