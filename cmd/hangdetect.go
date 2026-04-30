@@ -425,9 +425,20 @@ func snapshotActionForSession(sessionName string) daemon.HangAction {
 			fmt.Fprintf(&hb, "# launched_agent: %s\n", meta.Agent)
 			fmt.Fprintf(&hb, "# launched_cwd: %s\n", meta.Cwd)
 			fmt.Fprintf(&hb, "# launched_at: %s\n", meta.LaunchedAt.Format(time.RFC3339))
-			fmt.Fprintf(&hb, "# original_prompt: %s\n", oneLineForHeader(meta.Prompt))
-			fmt.Fprintf(&hb, "# resume_command: deckpilot launch %s %s --cwd %s\n",
-				meta.Agent, shellQuote(meta.Prompt), shellQuote(meta.Cwd))
+			if meta.Redacted {
+				// --no-meta-prompt was active when the session
+				// launched. The prompt was never persisted, so
+				// neither the original_prompt line nor the
+				// resume_command can include it — operator must
+				// re-supply it manually when respawning.
+				fmt.Fprintln(&hb, "# original_prompt: <redacted>")
+				fmt.Fprintf(&hb, "# resume_command: deckpilot launch %s %s --cwd %s\n",
+					meta.Agent, shellQuote(RedactedPromptPlaceholder), shellQuote(meta.Cwd))
+			} else {
+				fmt.Fprintf(&hb, "# original_prompt: %s\n", oneLineForHeader(meta.Prompt))
+				fmt.Fprintf(&hb, "# resume_command: deckpilot launch %s %s --cwd %s\n",
+					meta.Agent, shellQuote(meta.Prompt), shellQuote(meta.Cwd))
+			}
 		default:
 			fmt.Fprintln(&hb, "# launched_by: external (no launch-meta record — session was not started by `deckpilot launch`)")
 			fmt.Fprintln(&hb, "# resume_hint: read the full history below to recover the in-flight task,")
@@ -467,7 +478,13 @@ func snapshotActionForSession(sessionName string) daemon.HangAction {
 			}
 		}
 
-		if err := os.WriteFile(path, []byte(hb.String()+bb.String()), 0o644); err != nil {
+		// 0o600: hang dumps embed the original prompt (when not
+		// redacted) plus the full PTY history, which can carry
+		// tokens / paths / partial answers the operator would
+		// not want world-readable. NTFS ignores Unix mode bits
+		// so on Windows this is intent rather than enforcement —
+		// see issue #30.
+		if err := os.WriteFile(path, []byte(hb.String()+bb.String()), 0o600); err != nil {
 			return fmt.Errorf("ActionSnapshot: write %s: %w", path, err)
 		}
 		return nil
