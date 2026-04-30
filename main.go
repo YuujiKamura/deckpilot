@@ -30,8 +30,20 @@ func main() {
 		cmd.Launch(os.Args[2:])
 	case "watch":
 		cmd.Watch(os.Args[2:])
+	case "help", "-h", "--help":
+		fmt.Print(`Usage: deckpilot <command> [args]
+
+Commands:
+  send    <session> <message...>         Send message to a session
+  show    [session] [history]            Get session buffer
+  list                                   List active sessions (alias: ls)
+  launch  <agent> <prompt...> [--cwd D]  Start agent in new Ghostty window
+  watch   <session>                      Auto-approve prompts
+
+Run 'deckpilot help' for this message.
+`)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n\nAvailable commands: send, show, list, ls, launch, watch\nRun 'deckpilot help' for usage.\n", os.Args[1])
 		os.Exit(1)
 	}
 }
