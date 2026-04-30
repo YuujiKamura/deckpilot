@@ -4,7 +4,7 @@ Ghostty ターミナル上の AI エージェント（Claude Code, Codex, Gemini
 
 ## 前提条件
 
-- **Ghostty Windows版** ([ghostty-win](https://github.com/YuujiKamura/ghostty-win)) が必要。公式GhosttyはWindowsに対応していない
+- **Ghostty Windows版** ([ghostty-win](https://github.com/YuujiKamura/ghostty-win)) または **Windows Terminal** (要 `wt-sidecar` 連携) が必要。
 - Go 1.21+
 - Windows 10/11
 
@@ -64,7 +64,7 @@ deckpilot list
 ```
 NAME        RUNTIME   STATUS
 claude-01   winui3    idle
-codex-02    win32     active
+codex-02    wt        active
 ```
 
 ### `launch` — エージェント起動
@@ -121,10 +121,11 @@ Ctrl+C で停止。
 ### 1. .session ファイル（優先）
 
 ```
-%LOCALAPPDATA%\ghostty\control-plane\{winui3,win32}\sessions\*.session
+%LOCALAPPDATA%\ghostty\control-plane\{winui3,win32,web}\sessions\*.session
+%LOCALAPPDATA%\WindowsTerminal\control-plane\winui3\sessions\*.session
 ```
 
-key=value 形式で `session_name`, `pipe_path`, `pid`, `hwnd` を保持。プロセス生存と pipe 応答を検証し、不正なファイルは自動削除。
+key=value 形式で `session_name`, `pipe_path`, `pid`, `hwnd` を保持。プロセス生存と pipe 応答を検証し、不正なファイルは自動削除。Windows Terminal の場合は `wt-sidecar` がこのファイルを生成する。
 
 ### 2. プロセス探索（フォールバック）
 
