@@ -46,6 +46,7 @@ type Watcher struct {
 	lastContent string
 	onNotify    func(BufferNotification)
 	reqCh       chan pipeRequest
+	pauseCh     chan chan struct{} // send pause signal, receive resume signal
 }
 
 // NewWatcher creates a Watcher for the given session.
@@ -56,6 +57,7 @@ func NewWatcher(name, pipePath string, onNotify func(BufferNotification)) *Watch
 		status:   "active",
 		onNotify: onNotify,
 		reqCh:    make(chan pipeRequest, 16),
+		pauseCh:  make(chan chan struct{}),
 	}
 }
 
@@ -88,6 +90,9 @@ func (w *Watcher) Run(ctx context.Context) {
 			return
 		case req := <-w.reqCh:
 			w.handleRequest(req)
+		case resumeCh := <-w.pauseCh:
+			// Pause polling until resume signal
+			<-resumeCh
 		case <-ticker.C:
 			w.poll()
 			if w.Status() == "dead" {
@@ -230,6 +235,14 @@ func (w *Watcher) FreshHistory() (string, error) {
 	}
 	res := <-req.result
 	return res.content, res.err
+}
+
+// PausePolling stops the watcher from polling until the returned channel is closed.
+// Use this when sending to the pipe from outside the watcher goroutine.
+func (w *Watcher) PausePolling() chan struct{} {
+	resumeCh := make(chan struct{})
+	w.pauseCh <- resumeCh
+	return resumeCh
 }
 
 // Status returns the current status.

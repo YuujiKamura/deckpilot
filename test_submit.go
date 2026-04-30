@@ -13,11 +13,7 @@ import (
 )
 
 func main() {
-	pipe := `\\.\pipe\ghostty-winui3-ghostty-14092-14092`
-	if len(os.Args) > 1 {
-		pipe = os.Args[1]
-	}
-
+	pipe := `\\.\pipe\ghostty-winui3-ghostty-41484-41484`
 	data := []byte("\r")
 	encoded := base64.StdEncoding.EncodeToString(data)
 	msg := fmt.Sprintf("RAW_INPUT|test|%s\n", encoded)

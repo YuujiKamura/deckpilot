@@ -5,15 +5,13 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/YuujiKamura/deckpilot/daemon"
 	"github.com/YuujiKamura/deckpilot/pipe"
 )
 
-// Send sends a message to a named session.
-// Sends text via INPUT then \r via RAW_INPUT directly from this process
-// (not through daemon) because daemon-process RAW_INPUT doesn't trigger submit.
+// Send sends a message+submit to a named session.
+// Text via INPUT, then \r via RAW_INPUT, directly from this CLI process.
 func Send(args []string) {
 	if len(args) < 2 {
 		fmt.Fprintln(os.Stderr, "usage: deckpilot send <session> <message...>")
@@ -27,7 +25,7 @@ func Send(args []string) {
 		os.Exit(1)
 	}
 
-	// Resolve pipe path from daemon
+	// Resolve pipe path
 	raw, err := daemon.DaemonList()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "list: %v\n", err)
@@ -53,15 +51,16 @@ func Send(args []string) {
 		os.Exit(1)
 	}
 
-	// Send text via INPUT, wait for Ghostty to process, then \r via RAW_INPUT
+	// Send text via INPUT, submit via RAW_INPUT \r
+	// Ghostty CP uses SendMessageW so each input is fully drained before return
 	if err := pipe.SendKeys(pipePath, message); err != nil {
 		fmt.Fprintf(os.Stderr, "send text: %v\n", err)
 		os.Exit(1)
 	}
-	time.Sleep(500 * time.Millisecond)
 	if err := pipe.SendRaw(pipePath, []byte("\r")); err != nil {
-		fmt.Fprintf(os.Stderr, "send enter: %v\n", err)
+		fmt.Fprintf(os.Stderr, "send submit: %v\n", err)
 		os.Exit(1)
 	}
+
 	fmt.Fprintf(os.Stderr, "%s: submitted\n", name)
 }
