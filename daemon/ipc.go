@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"os"
 
 	"github.com/Microsoft/go-winio"
 	"github.com/YuujiKamura/deckpilot/pipe"
@@ -53,6 +54,12 @@ func (d *Daemon) handleConn(conn net.Conn) {
 		resp = d.handleShow(parts)
 	case "VERSION":
 		resp = handleVersion()
+	case "HOOK":
+		resp = d.handleHook(parts)
+	case "HOOK_LIST":
+		resp = d.handleHookList()
+	case "SHUTDOWN":
+		resp = d.handleShutdown()
 	default:
 		resp = fmt.Sprintf("ERR|unknown command: %s\n", cmd)
 	}
@@ -195,6 +202,10 @@ func (d *Daemon) handleSend(parts []string) string {
 
 	switch result.Status {
 	case SubmitOKCleared, SubmitOKThinking:
+		// Register callback hook if sender session is identified
+		if caller != "" && d.shouldRegisterCallback(name, caller) {
+			d.registerCallbackHook(name, caller)
+		}
 		return fmt.Sprintf("OK|submit_ok|%s|%dms\n", result.Status, result.ElapsedMs)
 	case SubmitFailedError:
 		return fmt.Sprintf("ERR|submit_failed|%s\n", result.Evidence)
@@ -418,4 +429,118 @@ func DaemonShow(name, mode, caller string) (content string, status string, err e
 		return "", "", fmt.Errorf("decode: %w", err)
 	}
 	return string(decoded), strings.TrimSpace(parts[1]), nil
+}
+
+// handleHook processes hook management commands
+func (d *Daemon) handleHook(parts []string) string {
+	if len(parts) < 2 {
+		return "ERR|usage: HOOK|<json_payload>\n"
+	}
+
+	payload := parts[1]
+	var request struct {
+		Action string   `json:"action"`
+		Hook   IdleHook `json:"hook"`
+	}
+
+	if err := json.Unmarshal([]byte(payload), &request); err != nil {
+		return fmt.Sprintf("ERR|json decode: %v\n", err)
+	}
+
+	switch request.Action {
+	case "add":
+		d.AddIdleHook(request.Hook)
+		return "OK\n"
+	case "remove":
+		d.RemoveIdleHooks()
+		return "OK\n"
+	default:
+		return fmt.Sprintf("ERR|unknown hook action: %s\n", request.Action)
+	}
+}
+
+// handleHookList returns current hooks as JSON
+func (d *Daemon) handleHookList() string {
+	hooks := d.ListIdleHooks()
+	data, err := json.Marshal(hooks)
+	if err != nil {
+		return fmt.Sprintf("ERR|json encode: %v\n", err)
+	}
+	return string(data) + "\n"
+}
+
+// handleShutdown gracefully shuts down the daemon
+func (d *Daemon) handleShutdown() string {
+	log.Printf("daemon: shutdown requested via IPC")
+	go func() {
+		// Give time to send response, then exit
+		time.Sleep(100 * time.Millisecond)
+		os.Exit(0)
+	}()
+	return "OK|daemon shutting down\n"
+}
+
+// DaemonAddIdleHook adds an idle hook via daemon IPC
+func DaemonAddIdleHook(hook IdleHook) error {
+	request := map[string]interface{}{
+		"action": "add",
+		"hook":   hook,
+	}
+	data, err := json.Marshal(request)
+	if err != nil {
+		return fmt.Errorf("json marshal: %w", err)
+	}
+
+	resp, err := dialDaemon(fmt.Sprintf("HOOK|%s", string(data)))
+	if err != nil {
+		return fmt.Errorf("dial daemon: %w", err)
+	}
+	if strings.HasPrefix(resp, "ERR|") {
+		return fmt.Errorf("%s", strings.TrimPrefix(resp, "ERR|"))
+	}
+	return nil
+}
+
+// DaemonRemoveIdleHooks removes all idle hooks via daemon IPC
+func DaemonRemoveIdleHooks() error {
+	request := map[string]interface{}{
+		"action": "remove",
+		"hook":   IdleHook{},
+	}
+	data, err := json.Marshal(request)
+	if err != nil {
+		return fmt.Errorf("json marshal: %w", err)
+	}
+
+	resp, err := dialDaemon(fmt.Sprintf("HOOK|%s", string(data)))
+	if err != nil {
+		return fmt.Errorf("dial daemon: %w", err)
+	}
+	if strings.HasPrefix(resp, "ERR|") {
+		return fmt.Errorf("%s", strings.TrimPrefix(resp, "ERR|"))
+	}
+	return nil
+}
+
+// DaemonListIdleHooks retrieves current idle hooks via daemon IPC
+func DaemonListIdleHooks() ([]IdleHook, error) {
+	resp, err := dialDaemon("HOOK_LIST")
+	if err != nil {
+		return nil, fmt.Errorf("dial daemon: %w", err)
+	}
+
+	var hooks []IdleHook
+	if err := json.Unmarshal([]byte(resp), &hooks); err != nil {
+		return nil, fmt.Errorf("json unmarshal: %w", err)
+	}
+	return hooks, nil
+}
+
+// DaemonShutdown sends shutdown command to daemon
+func DaemonShutdown() (string, error) {
+	resp, err := dialDaemon("SHUTDOWN")
+	if err != nil {
+		return "", fmt.Errorf("dial daemon: %w", err)
+	}
+	return resp, nil
 }

@@ -40,6 +40,10 @@ func main() {
 		cmd.Watch(os.Args[2:])
 	case "auto-approvals", "approve":
 		cmd.AutoApprovals(os.Args[2:])
+	case "notify":
+		cmd.Notify(os.Args[2:])
+	case "shutdown":
+		cmd.Shutdown()
 	case "version":
 		cmd.Version(os.Args[2:])
 	case "help", "-h", "--help":
@@ -53,11 +57,13 @@ Commands:
   watch            [session] [--once] [--json]    Monitor sessions (view-only, no approval)
   auto-approvals   <session> [--interval 2s]      Auto-approve prompts (alias: approve)
                    [--dry-run] [--verbose]
+  notify           add|remove|list <args>         Manage idle notification hooks
+  shutdown                                        Stop the daemon process
 
 Run 'deckpilot help' for this message.
 `)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\n\nAvailable commands: send, show, list, ls, launch, watch, auto-approvals, approve\nRun 'deckpilot help' for usage.\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n\nAvailable commands: send, show, list, ls, launch, watch, auto-approvals, approve, notify, shutdown\nRun 'deckpilot help' for usage.\n", os.Args[1])
 		os.Exit(1)
 	}
 }
