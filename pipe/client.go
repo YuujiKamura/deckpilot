@@ -34,11 +34,12 @@ func SendRecv(pipePath, message string) (string, error) {
 		return "", fmt.Errorf("write: %w", err)
 	}
 
-	// Read first response. For one-shot commands (INPUT, RAW_INPUT, PING),
-	// the response is a single line. For TAIL/HISTORY, it may be multi-line
-	// but we still get it in one read since Ghostty writes it atomically.
+	// Read first response.
 	tmp := make([]byte, 65536)
-	n, _ := conn.Read(tmp)
+	n, err := conn.Read(tmp)
+	if err != nil && n == 0 {
+		return "", fmt.Errorf("read: %w", err)
+	}
 	resp := strings.TrimRight(string(tmp[:n]), "\r\n")
 
 	// For TAIL responses, there may be more data (content lines).

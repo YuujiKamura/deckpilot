@@ -62,6 +62,10 @@ func discoverFromSessionFiles() ([]Session, error) {
 				}
 				continue
 			}
+			// Validate pipe before adding
+			if err := Ping(s.PipePath); err != nil {
+				continue
+			}
 			s.AppRuntime = subdir
 			sessions = append(sessions, s)
 		}
@@ -176,6 +180,15 @@ func parseSessionFile(path string) (Session, error) {
 func ensurePipePrefix(p string) string {
 	if strings.HasPrefix(p, `\\.\pipe\`) {
 		return p
+	}
+	if strings.HasPrefix(p, `\.\pipe\`) {
+		return `\` + p
+	}
+	if strings.HasPrefix(p, `//./pipe/`) {
+		return strings.Replace(p, `/`, `\`, -1)
+	}
+	if strings.HasPrefix(p, `/./pipe/`) {
+		return `\` + strings.Replace(p, `/`, `\`, -1)
 	}
 	return `\\.\pipe\` + p
 }
