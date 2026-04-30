@@ -266,61 +266,55 @@ func TestLaunchWithPrompt(t *testing.T) {
 	}
 
 	marker := "launch_prompt_test_marker_" + strconv.FormatInt(time.Now().Unix(), 10)
-	// Launch with a prompt that echoes a marker.
-	// We use "claude" agent which is defined in agents.go.
-	// Since we don't want to actually run Claude, we might need a dummy agent or
-	// rely on the fact that 'claude' command might not exist on the test machine,
-	// but the test 'launchTestSession' skips if Ghostty is missing.
-	
-	// Wait, if I use 'claude' agent, it tries to run 'claude' command.
-	// For E2E test, maybe I should check if 'claude' or 'codex' is available.
-	// Actually, the existing tests use 'claude' in launchTestSession but it
-	// seems to work (or skip).
-	
-	cmd := exec.Command(deckpilotExe, "launch", "claude", "echo "+marker)
-	cmd.Dir = `C:\Users\yuuji\deckpilot`
-	
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		stderr := ""
-		if ee, ok := err.(*exec.ExitError); ok {
-			stderr = string(ee.Stderr)
-		}
-		if strings.Contains(string(out)+stderr, "ghostty not found") {
-			t.Skip("Ghostty not found")
-		}
-		// If 'claude' is not found, it's an agent error but deckpilot might still
-		// have "sent" the prompt to the shell before claude failed to start,
-		// OR it might have failed to find claude.
-		t.Logf("launch failed: %v\noutput: %s", err, out)
-	}
 
-	sessionName := strings.TrimSpace(string(out))
-	if sessionName == "" {
-		t.Fatal("launch returned empty session name")
-	}
-	
-	// Ghostty PID for cleanup
-	pid := findGhosttyPID(t, sessionName)
-	defer func() {
-		if pid > 0 {
-			exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/F").Run()
-		}
-	}()
+	// Use launchTestSession which handles stdout/stderr separation correctly
+	// and skips gracefully when Ghostty is unavailable.
+	sess := launchTestSession(t, "echo "+marker)
+	defer sess.cleanup(t)
 
-	t.Logf("launched session: %s", sessionName)
+	// launchTestSession already waited for ready and sent the prompt via launch.
+	// However, the prompt may take time to be echoed into the buffer by Claude.
+	// Also, launch --prompt delivery can be unreliable (issue #5), so we send
+	// the marker again via an explicit "send" as a fallback.
+	time.Sleep(3 * time.Second)
 
-	// Wait for the prompt to be processed and marker to appear in buffer
-	time.Sleep(10 * time.Second)
-
-	showCmd := exec.Command(deckpilotExe, "show", sessionName)
+	// Check if marker is already in the buffer
+	showCmd := exec.Command(deckpilotExe, "show", sess.name)
 	showOut, err := showCmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("show failed: %v\n%s", err, showOut)
 	}
 
-	if !strings.Contains(string(showOut), marker) {
-		t.Errorf("buffer does not contain marker %q\ngot:\n%s", marker, showOut)
+	if strings.Contains(string(showOut), marker) {
+		t.Logf("marker found via launch prompt -- launch prompt delivery works")
+		return
+	}
+
+	// Marker not found yet -- send it explicitly as fallback.
+	// This verifies the send path works, but we report that launch prompt
+	// delivery failed (issue #5) so the test result is visible.
+	t.Logf("WARNING: marker not found via launch prompt (issue #5), verifying via explicit send")
+	sendCmd := exec.Command(deckpilotExe, "send", sess.name, "echo "+marker)
+	sendOut, err := sendCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("send failed: %v\n%s", err, sendOut)
+	}
+	t.Logf("send output: %s", sendOut)
+
+	// Wait for the agent to process the send
+	time.Sleep(8 * time.Second)
+
+	showCmd2 := exec.Command(deckpilotExe, "show", sess.name)
+	showOut2, err := showCmd2.CombinedOutput()
+	if err != nil {
+		t.Fatalf("show (retry) failed: %v\n%s", err, showOut2)
+	}
+
+	if !strings.Contains(string(showOut2), marker) {
+		t.Errorf("buffer does not contain marker %q after retry\ngot:\n%s", marker, showOut2)
+	} else {
+		// Test passes but launch prompt delivery didn't work -- flag it
+		t.Errorf("launch prompt delivery failed (issue #5): marker only appeared after explicit send")
 	}
 }
 

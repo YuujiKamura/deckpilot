@@ -192,7 +192,7 @@ func waitForReady(session string, agent AgentDef, timeout time.Duration) error {
 	for time.Now().Before(deadline) {
 		time.Sleep(1 * time.Second)
 
-		output, status, err := daemon.DaemonShow(session, "buffer", caller)
+		output, _, err := daemon.DaemonShow(session, "buffer", caller)
 		if err != nil {
 			continue
 		}
@@ -206,14 +206,13 @@ func waitForReady(session string, agent AgentDef, timeout time.Duration) error {
 			continue
 		}
 
-		// Check for ready
+		// Check for ready – once the ready string is visible, the agent
+		// has rendered its prompt.  We don't require status=="idle" because
+		// TUI agents (Claude Code, etc.) keep updating the terminal (cursor
+		// blink, status bar) which prevents the watcher from ever settling
+		// to "idle" reliably within the timeout window.
 		if trustHandled && strings.Contains(output, agent.ReadyStr) {
-			// Wait for buffer stability (idle status)
-			if status == "idle" {
-				return nil
-			}
-			// If not idle yet, we continue the loop and check again.
-			// The watcher updates status to "idle" after 1.5s of stability.
+			return nil
 		}
 	}
 
