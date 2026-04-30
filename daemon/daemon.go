@@ -25,6 +25,7 @@ type Daemon struct {
 	watchers      map[string]*Watcher // session name -> watcher
 	lastNotify    map[string]BufferNotification
 	onNotify      func(BufferNotification) // external callback (optional)
+	listeners     []chan BufferNotification // connected CLI listeners
 }
 
 // New creates a new Daemon instance.
@@ -33,6 +34,7 @@ func New() *Daemon {
 		sessions:   make(map[string]string),
 		watchers:   make(map[string]*Watcher),
 		lastNotify: make(map[string]BufferNotification),
+		listeners:  make([]chan BufferNotification, 0),
 	}
 }
 
@@ -79,6 +81,14 @@ func (d *Daemon) addSession(name, pipePath string) {
 	w := NewWatcher(name, pipePath, func(n BufferNotification) {
 		d.mu.Lock()
 		d.lastNotify[name] = n
+		// Broadcast to all listeners
+		for _, ch := range d.listeners {
+			select {
+			case ch <- n:
+			default:
+				// Skip if listener is blocked
+			}
+		}
 		d.mu.Unlock()
 		if d.onNotify != nil {
 			d.onNotify(n)
@@ -87,6 +97,25 @@ func (d *Daemon) addSession(name, pipePath string) {
 	d.watchers[name] = w
 	go w.Run(nil)
 	log.Printf("daemon: added session %q -> %s", name, pipePath)
+}
+
+func (d *Daemon) AddListener() chan BufferNotification {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	ch := make(chan BufferNotification, 16)
+	d.listeners = append(d.listeners, ch)
+	return ch
+}
+
+func (d *Daemon) RemoveListener(ch chan BufferNotification) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for i, c := range d.listeners {
+		if c == ch {
+			d.listeners = append(d.listeners[:i], d.listeners[i+1:]...)
+			break
+		}
+	}
 }
 
 // resolvePipePath looks up the pipe path for a session name.
