@@ -229,28 +229,3 @@ func waitForReady(session string, agent AgentDef, timeout time.Duration) error {
 
 	return fmt.Errorf("agent did not become ready within %v", timeout)
 }
-
-// SpawnGhostty starts a plain Ghostty window in the specified directory
-// and detaches from it immediately.
-func SpawnGhostty(cwd string) error {
-    ghosttyExe := FindGhostty()
-    if ghosttyExe == "" {
-        return fmt.Errorf("ghostty not found")
-    }
-
-    cmd := exec.Command(ghosttyExe)
-    cmd.Dir = cwd
-    cmd.Stdin = nil
-    cmd.Stdout = nil
-    cmd.Stderr = nil
-    cmd.SysProcAttr = &syscall.SysProcAttr{
-        CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP | 0x00000008, // DETACHED_PROCESS
-    }
-    if err := cmd.Start(); err != nil {
-        return err
-    }
-    if cmd.Process != nil {
-        cmd.Process.Release()
-    }
-    return nil
-}

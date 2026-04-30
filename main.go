@@ -65,8 +65,8 @@ func main() {
 	case "wait-idle":
 		cmd.WaitIdle(os.Args[2:])
 	case "cleanup":
-                cmd.Cleanup(os.Args[2:])
-        case "shutdown":
+		cmd.Cleanup(os.Args[2:])
+	case "shutdown":
 		cmd.Shutdown()
 	case "version":
 		cmd.Version(os.Args[2:])
@@ -94,7 +94,7 @@ Commands:
 Run 'deckpilot help' for this message.
 `)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\n\nAvailable commands: send, show, list, ls, launch, watch, auto-approvals, approve, notify, wait-idle, shutdown\nRun 'deckpilot help' for usage.\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n\nAvailable commands: send, show, list, ls, launch, watch, hang-detect, auto-approvals, approve, notify, wait-idle, cleanup, shutdown\nRun 'deckpilot help' for usage.\n", os.Args[1])
 		os.Exit(1)
 	}
 }
