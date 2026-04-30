@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -80,9 +79,7 @@ func SendKeys(pipePath, text string) error {
 func SendRaw(pipePath string, data []byte) error {
 	encoded := base64.StdEncoding.EncodeToString(data)
 	msg := fmt.Sprintf("RAW_INPUT|deckpilot|%s", encoded)
-	log.Printf("SendRaw: pipe=%s data=%q encoded=%s msg=%s", pipePath, data, encoded, msg)
 	resp, err := SendRecv(pipePath, msg)
-	log.Printf("SendRaw: resp=%q err=%v", resp, err)
 	if err != nil {
 		return fmt.Errorf("sendraw: %w", err)
 	}
