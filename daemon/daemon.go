@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -90,7 +91,7 @@ func (d *Daemon) addSession(name, pipePath, sessionFile, appRuntime string) {
 		}
 	})
 	d.watchers[name] = w
-	go w.Run(nil)
+	go w.Run(context.TODO())
 	log.Printf("daemon: added session %q -> %s", name, pipePath)
 }
 
@@ -154,18 +155,33 @@ func (d *Daemon) listSessions() []sessionInfo {
 	return result
 }
 
-// refreshSessions re-discovers sessions, removes dead watchers, and adds new ones.
+// refreshSessions re-discovers sessions, attempts to revive dead watchers, and adds new ones.
 func (d *Daemon) refreshSessions() {
-	// Remove dead watchers so they can be re-added
+	// Attempt to revive dead watchers instead of deleting them
 	d.mu.Lock()
+	var deadNames []string
 	for name, w := range d.watchers {
 		if w.Status() == "dead" {
-			delete(d.watchers, name)
-			delete(d.sessions, name)
-			delete(d.appRuntimes, name)
+			deadNames = append(deadNames, name)
+			_ = w // collect names while holding lock
 		}
 	}
 	d.mu.Unlock()
+
+	for _, name := range deadNames {
+		w, ok := d.getWatcher(name)
+		if !ok {
+			continue
+		}
+		if w.Revive() {
+			// Pipe is responsive again — restart the watcher goroutine
+			log.Printf("daemon: revived session %q", name)
+			go w.Run(context.TODO())
+		} else {
+			// Keep the session in maps with status "dead" so it remains visible
+			log.Printf("daemon: session %q still dead, keeping entry", name)
+		}
+	}
 
 	sessions, err := pipe.Discover()
 	if err != nil {
