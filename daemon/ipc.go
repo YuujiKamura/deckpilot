@@ -130,7 +130,8 @@ func (d *Daemon) handleSend(parts []string) string {
 	}
 
 	var resumeCh chan struct{}
-	if w, ok := d.getWatcher(name); ok {
+	w, ok := d.getWatcher(name)
+	if ok {
 		// Revive dead watcher before pausing
 		if w.Status() == "dead" {
 			w.Revive()
@@ -138,12 +139,19 @@ func (d *Daemon) handleSend(parts []string) string {
 		if w.Status() != "dead" {
 			resumeCh = w.PausePolling()
 			defer close(resumeCh)
+		} else {
+			w = nil // don't use dead watcher for Client() access
 		}
 	}
 
 	// Empty message = just send Enter directly
 	if msg == "" {
-		err := pipe.SendEnter(pipePath)
+		var err error
+		if w != nil {
+			_, err = w.Client().SendRaw([]byte("\r"))
+		} else {
+			err = pipe.SendEnter(pipePath)
+		}
 		if err != nil {
 			return fmt.Sprintf("ERR|send: %v\n", err)
 		}
@@ -155,13 +163,24 @@ func (d *Daemon) handleSend(parts []string) string {
 	// landed by buffer hash (not by string-matching the sent text, which is
 	// fragile to TUI display transformations like Gemini's "@path" →
 	// "[Image filename]").
-	tailFn := func() (string, error) { return pipe.Tail(pipePath, 40) }
+	tailFn := func() (string, error) {
+		if w != nil {
+			return w.Client().Tail(40)
+		}
+		return pipe.Tail(pipePath, 40)
+	}
 	baselineBuf, _ := tailFn()
 	baselineHash := BufHash(baselineBuf)
 
 	// Phase 1: INPUT (text only, no submit yet)
-	if err := pipe.SendKeys(pipePath, msg); err != nil {
-		return fmt.Sprintf("ERR|send text: %v\n", err)
+	var errPhase1 error
+	if w != nil {
+		_, errPhase1 = w.Client().SendKeys(msg)
+	} else {
+		_, errPhase1 = pipe.SendKeys(pipePath, msg)
+	}
+	if errPhase1 != nil {
+		return fmt.Sprintf("ERR|send text: %v\n", errPhase1)
 	}
 
 	// Let Ghostty process INPUT before we compare buffers.
@@ -186,8 +205,14 @@ func (d *Daemon) handleSend(parts []string) string {
 	}
 
 	// Phase 2: submit via RAW_INPUT(\r) as a standalone key event.
-	if err := pipe.SendEnter(pipePath); err != nil {
-		return fmt.Sprintf("ERR|submit enter: %v\n", err)
+	var errPhase2 error
+	if w != nil {
+		_, errPhase2 = w.Client().SendRaw([]byte("\r"))
+	} else {
+		errPhase2 = pipe.SendEnter(pipePath)
+	}
+	if errPhase2 != nil {
+		return fmt.Sprintf("ERR|submit enter: %v\n", errPhase2)
 	}
 
 	// Phase 3: pure buffer-hash comparison. Any divergence from preEnterHash
@@ -207,7 +232,11 @@ func (d *Daemon) handleSend(parts []string) string {
 	// Send a second Enter to confirm the selection.
 	if strings.HasPrefix(msg, "/") {
 		time.Sleep(500 * time.Millisecond)
-		pipe.SendRaw(pipePath, []byte("\r"))
+		if w != nil {
+			_, _ = w.Client().SendRaw([]byte("\r"))
+		} else {
+			_, _ = pipe.SendRaw(pipePath, []byte("\r"))
+		}
 	}
 
 	switch result.Status {
