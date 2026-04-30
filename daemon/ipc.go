@@ -151,30 +151,37 @@ func (d *Daemon) handleSend(parts []string) string {
 		return "OK|sent|enter\n"
 	}
 
+	// Phase 0: snapshot pre-typing baseline so we can detect that typing
+	// landed by buffer hash (not by string-matching the sent text, which is
+	// fragile to TUI display transformations like Gemini's "@path" →
+	// "[Image filename]").
+	tailFn := func() (string, error) { return pipe.Tail(pipePath, 40) }
+	baselineBuf, _ := tailFn()
+	baselineHash := BufHash(baselineBuf)
+
 	// Phase 1: INPUT (text only, no submit yet)
 	if err := pipe.SendKeys(pipePath, msg); err != nil {
 		return fmt.Sprintf("ERR|send text: %v\n", err)
 	}
 
-	// Let Ghostty process INPUT before we check visibility / send \r.
-	// Matches watcher.go handleRequest 100ms gap and avoids stale-scrollback
-	// probe matches when the same message is sent repeatedly.
+	// Let Ghostty process INPUT before we compare buffers.
 	time.Sleep(100 * time.Millisecond)
 
-	// Phase 1.5: wait until the text is visible in the TUI buffer. Compare on a
-	// whitespace-stripped basis so word-wrap and spacing differences don't cause
-	// false timeouts before submit.
-	probe := visibilityProbe(msg)
-	textVisible := false
+	// Phase 1.5: wait until the buffer hash diverges from the pre-typing
+	// baseline — that proves the typed text landed in the TUI. Capture the
+	// resulting hash as preEnterHash: the "idle with text-in-prompt" state
+	// that Phase 3 will compare future samples against.
+	preEnterHash := ""
 	for i := 0; i < 20; i++ { // up to ~600ms
-		buf, _ := pipe.Tail(pipePath, 20)
-		if probeVisibleInBuffer(buf, probe) {
-			textVisible = true
+		buf, _ := tailFn()
+		h := BufHash(buf)
+		if h != baselineHash && buf != "" {
+			preEnterHash = h
 			break
 		}
 		time.Sleep(30 * time.Millisecond)
 	}
-	if !textVisible {
+	if preEnterHash == "" {
 		return "ERR|text_not_visible|phase1_timeout\n"
 	}
 
@@ -183,13 +190,16 @@ func (d *Daemon) handleSend(parts []string) string {
 		return fmt.Sprintf("ERR|submit enter: %v\n", err)
 	}
 
-	// Phase 3: observe whether submit actually took effect.
-	// TODO #15-B: session registry で agent lookup して ThinkingStr を引く
-	thinkingStr := ""
-	errorStr := ""
-	tailFn := func() (string, error) { return pipe.Tail(pipePath, 40) }
-	result := ConfirmSubmit(tailFn, thinkingStr, errorStr, msg,
-		2*time.Second, 50*time.Millisecond)
+	// Phase 3: pure buffer-hash comparison. Any divergence from preEnterHash
+	// proves Enter was accepted; 3 consecutive matches prove it was not.
+	//
+	// pollInterval=200ms × stableRepeatThreshold=3 = 600ms before we declare
+	// stuck. This window must exceed the worst-case "Enter accepted but TUI
+	// hasn't started redrawing yet" latency. Empirically Gemini CLI with a
+	// @path image payload can take ~200-400ms between Enter and the first
+	// visible spinner frame; 50ms × 3 = 150ms was too aggressive and caused
+	// false FailedStuck on valid submits. 600ms is a safe minimum.
+	result := ConfirmSubmit(tailFn, preEnterHash, 2*time.Second, 200*time.Millisecond)
 
 	d.setLastUsed(caller, name)
 
@@ -201,14 +211,14 @@ func (d *Daemon) handleSend(parts []string) string {
 	}
 
 	switch result.Status {
-	case SubmitOKCleared, SubmitOKThinking:
+	case SubmitOKCleared:
 		// Register callback hook if sender session is identified
 		if caller != "" && d.shouldRegisterCallback(name, caller) {
 			d.registerCallbackHook(name, caller)
 		}
 		return fmt.Sprintf("OK|submit_ok|%s|%dms\n", result.Status, result.ElapsedMs)
-	case SubmitFailedError:
-		return fmt.Sprintf("ERR|submit_failed|%s\n", result.Evidence)
+	case SubmitFailedStuck:
+		return fmt.Sprintf("ERR|submit_failed_stuck|%dms\n", result.ElapsedMs)
 	case SubmitUnconfirmed:
 		return fmt.Sprintf("ERR|submit_unconfirmed|timeout_after_%dms\n", result.ElapsedMs)
 	}

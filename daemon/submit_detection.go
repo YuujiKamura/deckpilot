@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"strings"
 	"time"
 )
@@ -8,10 +10,21 @@ import (
 type SubmitStatus string
 
 const (
-	SubmitOKCleared   SubmitStatus = "ok_cleared"   // text moved out of input area
-	SubmitOKThinking  SubmitStatus = "ok_thinking"  // TUI shows thinking indicator
-	SubmitFailedError SubmitStatus = "failed_error" // TUI shows error string
-	SubmitUnconfirmed SubmitStatus = "unconfirmed"  // polling timeout
+	// SubmitOKCleared: the buffer moved beyond the pre-Enter snapshot —
+	// something happened after Enter was sent (prompt cleared, response
+	// started, etc.). The submit was accepted by the TUI.
+	SubmitOKCleared SubmitStatus = "ok_cleared"
+
+	// SubmitFailedStuck: three consecutive buffer samples all hash-equal to
+	// the pre-Enter snapshot. The TUI never redrew after Enter — the submit
+	// never fired. Positive failure, not a timeout.
+	SubmitFailedStuck SubmitStatus = "failed_stuck"
+
+	// SubmitUnconfirmed: observation window expired without seeing either
+	// movement beyond pre-Enter or three stable confirms. Most commonly
+	// this happens when tailFn errors or pollInterval is too large to fit
+	// the required number of samples in the window.
+	SubmitUnconfirmed SubmitStatus = "unconfirmed"
 )
 
 type SubmitResult struct {
@@ -20,18 +33,22 @@ type SubmitResult struct {
 	Evidence  string
 }
 
-// inputAreaTailLines is the number of trailing buffer lines considered part of
-// the TUI's input/status area. Most TUIs keep the prompt + a couple of status
-// rows at the bottom (claude-code has prompt + ~3 status lines; cmd/bash use 1).
-const inputAreaTailLines = 6
+// stableRepeatThreshold is the number of consecutive buffer samples that must
+// all hash-equal the pre-Enter reference before we declare the submit stuck.
+// Three is the minimum that distinguishes "stuck at typed input" from "still
+// in the brief window between Enter keystroke arrival and TUI redraw". See
+// design discussion: 2 samples can only observe "something changed"; the 3rd
+// sample is what proves "and then stayed changed" vs "changed and stayed".
+const stableRepeatThreshold = 3
 
-// promptChars are characters that commonly lead a prompt line.
-// Checked at the start of a stripped line (after leading whitespace).
+// promptChars are characters that commonly lead a prompt line. Retained
+// because ExtractInputLine is still used by other daemon code (watcher /
+// legacy diagnostics) even though submit detection no longer regex-matches
+// any per-agent markers.
 var promptChars = []string{"❯", ">", "$", "%", "#"}
 
 // ExtractInputLine returns the last line whose first non-space rune is a
-// common prompt character. Returns "" if no such line is found. The returned
-// string is right-trimmed of trailing whitespace/CR.
+// common prompt character. Returns "" if no such line is found.
 func ExtractInputLine(buf string) string {
 	result := ""
 	for _, line := range strings.Split(buf, "\n") {
@@ -50,55 +67,13 @@ func ExtractInputLine(buf string) string {
 	return result
 }
 
-// stripWhitespace removes all whitespace runes (space, tab, CR, LF) from s.
-// Used to make Contains-based matching robust to TUI word-wrap which inserts
-// \n at display-width boundaries inside our sent message.
-func stripWhitespace(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
-			continue
-		}
-		b.WriteRune(r)
-	}
-	return b.String()
-}
-
-// visibilityProbe returns a whitespace-stripped representation of msg suitable
-// for Contains-matching against (stripped) buffer content. This is robust to
-// both word-wrap and differs from short prefixes that can collide with
-// unrelated scrollback history (e.g. "deckpilot" appearing in past commits).
-//
-// Used by handleSend Phase 1.5 and ConfirmSubmit Phase 3.
-func visibilityProbe(msg string) string {
-	return stripWhitespace(msg)
-}
-
-// probeVisibleInBuffer reports whether the whitespace-stripped probe is visible
-// in buf after whitespace stripping. This keeps visibility checks robust to
-// word-wrap and spacing differences in the rendered TUI buffer.
-func probeVisibleInBuffer(buf, probe string) bool {
-	if probe == "" {
-		return true
-	}
-	return strings.Contains(stripWhitespace(buf), probe)
-}
-
-// probeInBufferExcludingTail reports whether probe appears in the buffer
-// EXCLUDING the last tailLines. Used to detect when probe has moved from
-// input area (last N lines) to scrollback/conversation area.
-func probeInBufferExcludingTail(buf, probe string, tailLines int) bool {
-	if probe == "" {
-		return false
-	}
-	lines := strings.Split(buf, "\n")
-	if len(lines) <= tailLines {
-		return false // buffer too small, nowhere outside tail
-	}
-	// Check only lines [0 : len-tailLines] (excluding tail)
-	excludedBuf := strings.Join(lines[:len(lines)-tailLines], "\n")
-	return strings.Contains(stripWhitespace(excludedBuf), probe)
+// BufHash returns a stable SHA-256 hex digest for a buffer snapshot. Two
+// buffers with the same hash are byte-identical; two with different hashes
+// differ somewhere. Exported so ipc.go's send path can capture the pre-Enter
+// reference hash and pass it into ConfirmSubmit.
+func BufHash(buf string) string {
+	h := sha256.Sum256([]byte(buf))
+	return hex.EncodeToString(h[:])
 }
 
 // tailLines returns the last n lines of buf as a single string.
@@ -110,95 +85,57 @@ func tailLines(buf string, n int) string {
 	return strings.Join(lines[len(lines)-n:], "\n")
 }
 
-// findLineContaining returns the first line in buf that contains substr, or "".
-func findLineContaining(buf, substr string) string {
-	for _, line := range strings.Split(buf, "\n") {
-		if strings.Contains(line, substr) {
-			return strings.TrimRight(line, " \r\t")
-		}
-	}
-	return ""
-}
-
-// containsInTail reports whether substr appears in the last tailN lines of buf
-// after whitespace stripping. This keeps the input-area check robust against
-// TUI word-wrap and incidental spacing differences.
-func containsInTail(buf, substr string, tailN int) bool {
-	if substr == "" {
-		return false
-	}
-	lines := strings.Split(buf, "\n")
-	start := len(lines) - tailN
-	if start < 0 {
-		start = 0
-	}
-	joined := strings.Join(lines[start:], "\n")
-	return strings.Contains(stripWhitespace(joined), substr)
-}
-
-// ConfirmSubmit observes the pipe's buffer to detect whether a submit happened.
+// ConfirmSubmit observes the TUI buffer to decide whether pressing Enter
+// actually submitted. The algorithm is pure buffer-hash comparison — no
+// per-agent regex, no string-matching against the sent text. This keeps
+// the logic robust to TUI transformations like Gemini's replacement of
+// "@path/to/file.jpg" with "[Image file.jpg]" in scrollback, which would
+// break any probe-based approach.
 //
-// Arguments:
+// Protocol:
 //
-//	tailFn        - reads current buffer tail (abstracted for testability).
-//	thinkingStr   - per-agent indicator string (e.g. "Gesticulating"). Empty = skip.
-//	errorStr      - per-agent failure indicator. Empty = skip.
-//	preSubmitText - the actual text we sent. Used to detect submit by checking
-//	                whether the text has moved out of the input area (last few
-//	                buffer lines) into scrollback history. Empty = skip this
-//	                signal (detection relies on thinkingStr only).
-//	timeout       - total observation budget.
-//	pollInterval  - how often to re-read buffer.
+//  1. Caller captures the buffer-hash IMMEDIATELY AFTER typing lands but
+//     BEFORE pressing Enter → `preEnterHash`. This is the "idle with text
+//     in prompt" state.
+//  2. Caller presses Enter.
+//  3. Caller invokes ConfirmSubmit, which polls the buffer:
+//     - If any sample's hash != preEnterHash → SubmitOKCleared (buffer moved
+//       beyond the pre-Enter state, so Enter did something).
+//     - If stableRepeatThreshold consecutive samples all hash-equal
+//       preEnterHash → SubmitFailedStuck (TUI never redrew; submit never
+//       fired).
+//     - If neither condition is reached before timeout → SubmitUnconfirmed.
 //
-// Priority: errorStr > thinkingStr > text-moved-out-of-input > timeout.
-// Never retries sending. Observation only.
+// Minimum 3 samples for stuck detection, as discussed in the design note:
+// 2 samples can only confirm equality; the 3rd is needed to rule out the
+// transient overlap between Enter arriving and the TUI beginning to redraw.
 func ConfirmSubmit(
 	tailFn func() (string, error),
-	thinkingStr, errorStr, preSubmitText string,
+	preEnterHash string,
 	timeout, pollInterval time.Duration,
 ) SubmitResult {
 	start := time.Now()
 	deadline := start.Add(timeout)
 
+	stableRepeats := 0
+
 	for time.Now().Before(deadline) {
 		buf, err := tailFn()
 		if err == nil && buf != "" {
-			evidence := tailLines(buf, 40)
-
-			if errorStr != "" && strings.Contains(buf, errorStr) {
+			h := BufHash(buf)
+			if h != preEnterHash {
 				return SubmitResult{
-					Status:    SubmitFailedError,
+					Status:    SubmitOKCleared,
 					ElapsedMs: int(time.Since(start).Milliseconds()),
-					Evidence:  findLineContaining(buf, errorStr),
+					Evidence:  tailLines(buf, 40),
 				}
 			}
-
-			if thinkingStr != "" && strings.Contains(buf, thinkingStr) {
+			stableRepeats++
+			if stableRepeats >= stableRepeatThreshold {
 				return SubmitResult{
-					Status:    SubmitOKThinking,
+					Status:    SubmitFailedStuck,
 					ElapsedMs: int(time.Since(start).Milliseconds()),
-					Evidence:  findLineContaining(buf, thinkingStr),
-				}
-			}
-
-			// Text-moved-out: the text we typed must appear somewhere in buffer
-			// (confirming Phase 1 delivery), but NOT in the bottom input area
-			// (confirming submit caused it to scroll up into history).
-			// TUI word-wraps long text, so we match on a short probe (the first
-			// run of non-space runes) instead of the full preSubmitText.
-			if preSubmitText != "" {
-				probe := visibilityProbe(preSubmitText)
-				if probe != "" {
-					// Check if probe moved from input area to scrollback area
-					inBuf := probeInBufferExcludingTail(buf, probe, inputAreaTailLines)
-					inInputArea := containsInTail(buf, probe, inputAreaTailLines)
-					if inBuf && !inInputArea {
-						return SubmitResult{
-							Status:    SubmitOKCleared,
-							ElapsedMs: int(time.Since(start).Milliseconds()),
-							Evidence:  evidence,
-						}
-					}
+					Evidence:  tailLines(buf, 40),
 				}
 			}
 		}
