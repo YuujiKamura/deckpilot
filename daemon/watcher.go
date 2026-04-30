@@ -102,14 +102,18 @@ func (w *Watcher) handleRequest(req pipeRequest) {
 	var res pipeResult
 	switch req.kind {
 	case "sendkeys":
-		// Send text via INPUT, then submit via RAW_INPUT \r
 		prevStatus := w.Status()
+		// Send text via INPUT
 		err := pipe.SendKeys(w.pipePath, req.payload)
+		// Wait for Ghostty to process INPUT before sending RAW_INPUT \r
 		if err == nil {
+			time.Sleep(100 * time.Millisecond)
 			err = pipe.SendRaw(w.pipePath, []byte("\r"))
 		}
+		res.err = err
 		if err == nil {
-			// Poll once to detect state change (submit confirmation)
+			// Wait a moment for Ghostty to process, then poll
+			time.Sleep(200 * time.Millisecond)
 			w.poll()
 			newStatus := w.Status()
 			if newStatus != prevStatus {
@@ -118,7 +122,6 @@ func (w *Watcher) handleRequest(req pipeRequest) {
 				res.content = fmt.Sprintf("sent (status: %s, no change yet)", newStatus)
 			}
 		}
-		res.err = err
 	case "tail":
 		res.content, res.err = pipe.Tail(w.pipePath, req.lines)
 		if res.err == nil {

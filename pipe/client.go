@@ -78,7 +78,7 @@ func SendKeys(pipePath, text string) error {
 // Falls back to INPUT if RAW_INPUT is not supported.
 func SendRaw(pipePath string, data []byte) error {
 	encoded := base64.StdEncoding.EncodeToString(data)
-	msg := fmt.Sprintf("RAW_INPUT|deckpilot|%s", encoded)
+	msg := fmt.Sprintf("RAW_INPUT|agent-deck|%s", encoded)
 	resp, err := SendRecv(pipePath, msg)
 	if err != nil {
 		return fmt.Errorf("sendraw: %w", err)
