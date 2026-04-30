@@ -41,8 +41,8 @@ var agents = map[string]AgentDef{
 	"gemini": {
 		Cmd:       "gemini",
 		Args:      []string{},
-		ReadyStr:  ">>>",
-		TrustStr:  "trust the contents",
+		ReadyStr:  ">",
+		TrustStr:  "",
 		SubmitKey: "\r",
 	},
 }
