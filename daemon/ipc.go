@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Microsoft/go-winio"
+	"github.com/YuujiKamura/deckpilot/pipe"
 )
 
 // handleConn reads one line from the connection, dispatches the command,
@@ -64,20 +65,32 @@ func (d *Daemon) handleSend(parts []string) string {
 	}
 	msg := string(msgBytes)
 
-	w, ok := d.getWatcher(name)
+	pipePath, ok := d.resolvePipePath(name)
 	if !ok {
 		d.refreshSessions()
-		w, ok = d.getWatcher(name)
+		pipePath, ok = d.resolvePipePath(name)
 		if !ok {
 			return fmt.Sprintf("ERR|session not found: %s\n", name)
 		}
 	}
 
-	feedback, err := w.Send(msg)
-	if err != nil {
-		return fmt.Sprintf("ERR|send: %v\n", err)
+	// Send text via INPUT, then \r via separate RAW_INPUT (direct pipe, bypass watcher).
+	// Ghostty CP requires \r in its own RAW_INPUT to trigger submit.
+	if err := pipe.SendKeys(pipePath, msg); err != nil {
+		return fmt.Sprintf("ERR|send text: %v\n", err)
 	}
-	return fmt.Sprintf("OK|%s\n", feedback)
+	if err := pipe.SendRaw(pipePath, []byte("\r")); err != nil {
+		return fmt.Sprintf("ERR|send enter: %v\n", err)
+	}
+
+	// Check watcher for status change
+	w, wok := d.getWatcher(name)
+	if wok {
+		time.Sleep(300 * time.Millisecond)
+		status := w.Status()
+		return fmt.Sprintf("OK|sent (%s)\n", status)
+	}
+	return "OK|sent\n"
 }
 
 func (d *Daemon) handleList() string {
