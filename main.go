@@ -24,14 +24,8 @@ func main() {
 		cmd.Send(os.Args[2:])
 	case "list", "ls":
 		cmd.List()
-	case "status":
-		cmd.Status(os.Args[2:])
-	case "listen":
-		cmd.Listen()
-	case "output":
-		cmd.Output(os.Args[2:])
-	case "history":
-		cmd.History(os.Args[2:])
+	case "show":
+		cmd.Show(os.Args[2:])
 	case "launch":
 		cmd.Launch(os.Args[2:])
 	default:

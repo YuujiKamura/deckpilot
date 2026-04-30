@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -89,7 +90,8 @@ func Launch(args []string) {
 		cwd,
 		agent.Cmd,
 		strings.Join(agent.Args, " "))
-	_, err = daemon.DaemonSend(sessionName, launchCmd)
+	caller := strconv.Itoa(os.Getppid())
+	_, err = daemon.DaemonSend(sessionName, launchCmd, caller)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "send launch cmd: %v\n", err)
 		os.Exit(1)
@@ -105,7 +107,7 @@ func Launch(args []string) {
 	fmt.Fprintf(os.Stderr, "ready: %s\n", agentName)
 
 	// Send prompt
-	result, err := daemon.DaemonSend(sessionName, prompt)
+	result, err := daemon.DaemonSend(sessionName, prompt, caller)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "send: %v\n", err)
 		os.Exit(1)
@@ -183,13 +185,14 @@ func waitForNewSession(known []string, timeout time.Duration) (string, error) {
 }
 
 func waitForReady(session string, agent AgentDef, timeout time.Duration) error {
+	caller := strconv.Itoa(os.Getppid())
 	trustHandled := agent.TrustStr == ""
 	deadline := time.Now().Add(timeout)
 
 	for time.Now().Before(deadline) {
 		time.Sleep(1 * time.Second)
 
-		output, err := daemon.DaemonOutput(session, 50)
+		output, _, err := daemon.DaemonShow(session, "buffer", caller)
 		if err != nil {
 			continue
 		}
@@ -197,7 +200,7 @@ func waitForReady(session string, agent AgentDef, timeout time.Duration) error {
 		// Handle trust confirmation
 		if !trustHandled && strings.Contains(output, agent.TrustStr) {
 			// Send Enter to accept trust
-			daemon.DaemonSend(session, "")
+			daemon.DaemonSend(session, "", caller)
 			trustHandled = true
 			time.Sleep(2 * time.Second)
 			continue

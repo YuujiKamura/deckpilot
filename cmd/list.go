@@ -9,9 +9,10 @@ import (
 )
 
 type listEntry struct {
-	Name     string `json:"name"`
-	PipePath string `json:"pipe_path"`
-	Status   string `json:"status"`
+	Name       string `json:"name"`
+	PipePath   string `json:"pipe_path"`
+	AppRuntime string `json:"app_runtime"`
+	Status     string `json:"status"`
 }
 
 // List prints all active sessions as a table.
@@ -38,8 +39,8 @@ func List() {
 		return
 	}
 
-	fmt.Printf("%-25s %s\n", "NAME", "STATUS")
+	fmt.Printf("%-25s %-10s %s\n", "NAME", "RUNTIME", "STATUS")
 	for _, s := range sessions {
-		fmt.Printf("%-25s %s\n", s.Name, s.Status)
+		fmt.Printf("%-25s %-10s %s\n", s.Name, s.AppRuntime, s.Status)
 	}
 }

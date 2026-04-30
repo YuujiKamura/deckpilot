@@ -22,19 +22,21 @@ func IPCPipePath() string {
 type Daemon struct {
 	mu            sync.Mutex
 	sessions      map[string]string   // session name -> pipe path
+	appRuntimes   map[string]string   // session name -> app runtime (winui3/win32)
 	watchers      map[string]*Watcher // session name -> watcher
 	lastNotify    map[string]BufferNotification
 	onNotify      func(BufferNotification) // external callback (optional)
-	listeners     []chan BufferNotification // connected CLI listeners
+	lastUsed      map[string]string        // caller -> session name
 }
 
 // New creates a new Daemon instance.
 func New() *Daemon {
 	return &Daemon{
-		sessions:   make(map[string]string),
-		watchers:   make(map[string]*Watcher),
-		lastNotify: make(map[string]BufferNotification),
-		listeners:  make([]chan BufferNotification, 0),
+		sessions:    make(map[string]string),
+		appRuntimes: make(map[string]string),
+		watchers:    make(map[string]*Watcher),
+		lastNotify:  make(map[string]BufferNotification),
+		lastUsed:    make(map[string]string),
 	}
 }
 
@@ -47,9 +49,9 @@ func (d *Daemon) Run() error {
 		log.Printf("discover warning: %v", err)
 	}
 	for _, s := range sessions {
-		d.addSession(s.Name, s.PipePath)
+		d.addSession(s.Name, s.PipePath, s.SessionFile, s.AppRuntime)
 	}
-	log.Printf("daemon: discovered %d sessions", len(sessions))
+	log.Printf("daemon: discovered %d session(s)", len(sessions))
 
 	listener, err := winio.ListenPipe(IPCPipePath(), nil)
 	if err != nil {
@@ -69,7 +71,7 @@ func (d *Daemon) Run() error {
 }
 
 // addSession registers a session and starts a watcher goroutine.
-func (d *Daemon) addSession(name, pipePath string) {
+func (d *Daemon) addSession(name, pipePath, sessionFile, appRuntime string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -77,18 +79,11 @@ func (d *Daemon) addSession(name, pipePath string) {
 		return
 	}
 	d.sessions[name] = pipePath
+	d.appRuntimes[name] = appRuntime
 
-	w := NewWatcher(name, pipePath, func(n BufferNotification) {
+	w := NewWatcher(name, pipePath, sessionFile, func(n BufferNotification) {
 		d.mu.Lock()
 		d.lastNotify[name] = n
-		// Broadcast to all listeners
-		for _, ch := range d.listeners {
-			select {
-			case ch <- n:
-			default:
-				// Skip if listener is blocked
-			}
-		}
 		d.mu.Unlock()
 		if d.onNotify != nil {
 			d.onNotify(n)
@@ -99,23 +94,20 @@ func (d *Daemon) addSession(name, pipePath string) {
 	log.Printf("daemon: added session %q -> %s", name, pipePath)
 }
 
-func (d *Daemon) AddListener() chan BufferNotification {
+func (d *Daemon) setLastUsed(caller, session string) {
+	if caller == "" {
+		return
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	ch := make(chan BufferNotification, 16)
-	d.listeners = append(d.listeners, ch)
-	return ch
+	d.lastUsed[caller] = session
 }
 
-func (d *Daemon) RemoveListener(ch chan BufferNotification) {
+func (d *Daemon) getLastUsed(caller string) (string, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	for i, c := range d.listeners {
-		if c == ch {
-			d.listeners = append(d.listeners[:i], d.listeners[i+1:]...)
-			break
-		}
-	}
+	s, ok := d.lastUsed[caller]
+	return s, ok
 }
 
 // resolvePipePath looks up the pipe path for a session name.
@@ -135,9 +127,10 @@ func (d *Daemon) getWatcher(name string) (*Watcher, bool) {
 }
 
 type sessionInfo struct {
-	Name     string `json:"name"`
-	PipePath string `json:"pipe_path"`
-	Status   string `json:"status"`
+	Name       string `json:"name"`
+	PipePath   string `json:"pipe_path"`
+	AppRuntime string `json:"app_runtime"`
+	Status     string `json:"status"`
 }
 
 // listSessions returns a snapshot of all session info.
@@ -152,9 +145,10 @@ func (d *Daemon) listSessions() []sessionInfo {
 			status = w.Status()
 		}
 		result = append(result, sessionInfo{
-			Name:     name,
-			PipePath: pipePath,
-			Status:   status,
+			Name:       name,
+			PipePath:   pipePath,
+			AppRuntime: d.appRuntimes[name],
+			Status:     status,
 		})
 	}
 	return result
@@ -168,6 +162,7 @@ func (d *Daemon) refreshSessions() {
 		if w.Status() == "dead" {
 			delete(d.watchers, name)
 			delete(d.sessions, name)
+			delete(d.appRuntimes, name)
 		}
 	}
 	d.mu.Unlock()
@@ -177,7 +172,7 @@ func (d *Daemon) refreshSessions() {
 		return
 	}
 	for _, s := range sessions {
-		d.addSession(s.Name, s.PipePath)
+		d.addSession(s.Name, s.PipePath, s.SessionFile, s.AppRuntime)
 	}
 }
 
