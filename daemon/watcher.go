@@ -45,6 +45,9 @@ type Watcher struct {
 	stableCount int
 	status      string
 	lastContent string
+	lastError   string
+	deadAt      time.Time
+	deadRetries int
 	onNotify    func(BufferNotification)
 	reqCh       chan pipeRequest
 	pauseCh     chan chan struct{} // send pause signal, receive resume signal
@@ -66,6 +69,7 @@ func NewWatcher(name, pipePath, sessionFile string, onNotify func(BufferNotifica
 // Run is the single goroutine that owns all pipe I/O for this session.
 // Poll on ticker, drain requests between polls.
 func (w *Watcher) Run(ctx context.Context) {
+	log.Printf("watcher[%s]: goroutine started, pipe=%s", w.name, w.pipePath)
 	if ctx == nil {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithCancel(context.Background())
@@ -98,7 +102,11 @@ func (w *Watcher) Run(ctx context.Context) {
 		case <-ticker.C:
 			w.poll()
 			if w.Status() == "dead" {
-				log.Printf("watcher: session %q is dead (pipe error), stopping watcher", w.name)
+				w.mu.Lock()
+				errMsg := w.lastError
+				deadTime := w.deadAt
+				w.mu.Unlock()
+				log.Printf("watcher: session %q dead at %s, error: %s, stopping goroutine", w.name, deadTime.Format("15:04:05"), errMsg)
 				return
 			}
 		}
@@ -144,10 +152,24 @@ func (w *Watcher) poll() {
 	content, err := pipe.Tail(w.pipePath, 50)
 	if err != nil {
 		w.mu.Lock()
-		w.status = "dead"
+		w.deadRetries++
+		retries := w.deadRetries
 		w.mu.Unlock()
+		log.Printf("watcher[%s]: pipe.Tail error (%d/3): %v", w.name, retries, err)
+		if retries >= 3 {
+			w.mu.Lock()
+			w.status = "dead"
+			w.lastError = err.Error()
+			w.deadAt = time.Now()
+			w.mu.Unlock()
+			log.Printf("watcher[%s]: marked dead after 3 consecutive failures. last error: %v", w.name, err)
+		}
 		return
 	}
+	// Reset retry counter on success
+	w.mu.Lock()
+	w.deadRetries = 0
+	w.mu.Unlock()
 	w.updateContent(content)
 }
 
