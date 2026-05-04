@@ -17,6 +17,7 @@ import (
 
 	"github.com/Microsoft/go-winio"
 	"github.com/YuujiKamura/deckpilot/pipe"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 // Domain / value types (IdleHook, sessionInfo, BufferNotification) live in
@@ -94,13 +95,21 @@ func (d *Daemon) Run() error {
 		}
 	}
 
-	// 2. Set up logging and core initialization
+	// 2. Set up logging and core initialization.
+	// lumberjack handles rotation in-process: O_APPEND alone grew the
+	// log to ~491 MB after a few days. Bound the on-disk footprint to
+	// roughly 30 MB live + 3 compressed backups, expiring after a week.
+	// We keep the startup banner so each rotated file has a clear
+	// pid/timestamp anchor for postmortem grepping.
 	logPath := filepath.Join(os.TempDir(), "deckpilot-daemon.log")
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err == nil {
-		log.SetOutput(logFile)
-		log.Printf("=== daemon started pid=%d ===", os.Getpid())
-	}
+	log.SetOutput(&lumberjack.Logger{
+		Filename:   logPath,
+		MaxSize:    10, // megabytes per file before rotation
+		MaxBackups: 3,
+		MaxAge:     7, // days
+		Compress:   true,
+	})
+	log.Printf("=== daemon started pid=%d ===", os.Getpid())
 
 	// 3. Start background discovery and refresh loop.
 	// Using a channel to feed discovered sessions avoids blocking startup.
