@@ -149,7 +149,9 @@ func AutoApprovals(args []string) {
 				if agentType == "gemini" {
 					switch matched {
 					case "Allow execution of", "実行を許可しますか":
-						response = "1"
+						// Default cursor is on option 1 (●); Enter selects it.
+						// Sending "1" types '1' as text into the prompt buffer.
+						response = ""
 					case "(y/N)":
 						response = "y"
 					}

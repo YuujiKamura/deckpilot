@@ -23,7 +23,7 @@ var agents = map[string]AgentDef{
 	},
 	"claude": {
 		Cmd:         "claude",
-		Args:        []string{"--dangerously-skip-permissions"},
+		Args:        claudeDefaultArgs(),
 		ReadyStr:    ">",
 		TrustStr:    "",
 		SubmitKey:   "\r",
@@ -32,7 +32,7 @@ var agents = map[string]AgentDef{
 	},
 	"sonnet": {
 		Cmd:         "claude",
-		Args:        []string{"--dangerously-skip-permissions", "--model", "sonnet"},
+		Args:        append(claudeDefaultArgs(), "--model", "sonnet"),
 		ReadyStr:    ">",
 		TrustStr:    "",
 		SubmitKey:   "\r",
@@ -41,7 +41,7 @@ var agents = map[string]AgentDef{
 	},
 	"haiku": {
 		Cmd:         "claude",
-		Args:        []string{"--dangerously-skip-permissions", "--model", "haiku"},
+		Args:        append(claudeDefaultArgs(), "--model", "haiku"),
 		ReadyStr:    ">",
 		TrustStr:    "",
 		SubmitKey:   "\r",
@@ -61,3 +61,9 @@ var agents = map[string]AgentDef{
 
 // DefaultSubmitKey is the fallback submit key for unknown agents.
 const DefaultSubmitKey = "\r"
+
+func claudeDefaultArgs() []string {
+	return []string{
+		"--dangerously-skip-permissions",
+	}
+}

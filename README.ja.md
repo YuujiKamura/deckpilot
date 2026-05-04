@@ -88,18 +88,23 @@ codex-02    wt        active
 ### `launch` — エージェント起動
 
 ```bash
-deckpilot launch <agent> <prompt...> [--cwd DIR] [--no-meta-prompt]
+deckpilot launch <agent> <prompt...> [--cwd DIR] [--shared-cwd] [--no-meta-prompt]
 ```
 
 Ghostty ウィンドウを新規起動し、エージェントの準備完了を待ってからプロンプトを送信する。セッション名を stdout に出力するのでスクリプトから利用可能。
 
-| Agent   | コマンド                                  | Ready 文字列 |
-|---------|------------------------------------------|--------------|
-| claude  | `claude --dangerously-skip-permissions`  | `>`          |
-| sonnet  | `claude --model sonnet`                  | `>`          |
-| haiku   | `claude --model haiku`                   | `>`          |
-| codex   | `codex --full-auto`                      | `›`          |
-| gemini  | `gemini`                                 | `>`          |
+| Agent   | コマンド                                            | Ready 文字列 |
+|---------|----------------------------------------------------|--------------|
+| claude  | `claude --dangerously-skip-permissions`            | `>`          |
+| sonnet  | `claude --dangerously-skip-permissions --model sonnet` | `>`      |
+| haiku   | `claude --dangerously-skip-permissions --model haiku`  | `>`      |
+| codex   | `codex --full-auto`                                | `›`          |
+| gemini  | `gemini`                                           | `>`          |
+
+git repository 内から起動した場合、`deckpilot launch` は既定で
+`~/.deckpilot/worktrees/` 配下に detached worktree を作り、agent をそこ
+で実行する。自動承認 session が共有 dirty worktree を直接触らないための
+隔離。元の working tree で動かす必要がある場合だけ `--shared-cwd` を使う。
 
 #### Prompt 永続化と `--no-meta-prompt`
 

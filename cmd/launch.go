@@ -24,6 +24,7 @@ type LaunchArgs struct {
 	Prompt       string
 	Cwd          string
 	NoMetaPrompt bool
+	SharedCwd    bool
 }
 
 // ParseLaunchArgs is the args parser carved out of Launch so tests can
@@ -36,7 +37,7 @@ type LaunchArgs struct {
 // <prompt...>` minus the `launch` token).
 func ParseLaunchArgs(args []string, defaultCwd string) (LaunchArgs, string) {
 	if len(args) < 1 {
-		return LaunchArgs{}, "usage: deckpilot launch <agent> <prompt...> [--cwd DIR] [--no-meta-prompt]"
+		return LaunchArgs{}, "usage: deckpilot launch <agent> <prompt...> [--cwd DIR] [--shared-cwd] [--no-meta-prompt]"
 	}
 	out := LaunchArgs{
 		AgentName: args[0],
@@ -53,13 +54,15 @@ func ParseLaunchArgs(args []string, defaultCwd string) (LaunchArgs, string) {
 			i++
 		case "--no-meta-prompt":
 			out.NoMetaPrompt = true
+		case "--shared-cwd":
+			out.SharedCwd = true
 		default:
 			promptParts = append(promptParts, args[i])
 		}
 	}
 	out.Prompt = strings.Join(promptParts, " ")
 	if out.Prompt == "" {
-		return LaunchArgs{}, "usage: deckpilot launch <agent> <prompt...> [--cwd DIR] [--no-meta-prompt]"
+		return LaunchArgs{}, "usage: deckpilot launch <agent> <prompt...> [--cwd DIR] [--shared-cwd] [--no-meta-prompt]"
 	}
 	return out, ""
 }
@@ -103,6 +106,18 @@ func Launch(args []string) {
 	if ghosttyExe == "" {
 		fmt.Fprintln(os.Stderr, "ghostty not found. Set GHOSTTY_EXE or install ghostty on PATH")
 		os.Exit(1)
+	}
+
+	if !parsed.SharedCwd {
+		isolatedCwd, isolated, err := maybeCreateLaunchWorktree(cwd, agentName)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "worktree isolation: %v\n", err)
+			os.Exit(1)
+		}
+		if isolated {
+			cwd = isolatedCwd
+			fmt.Fprintf(os.Stderr, "isolated worktree cwd: %s\n", cwd)
+		}
 	}
 
 	// Launch plain Ghostty, then send commands via CP after session is up.
@@ -157,7 +172,7 @@ func Launch(args []string) {
 	launchCmd := fmt.Sprintf("cd /d \"%s\" && %s %s",
 		cwd,
 		agent.Cmd,
-		strings.Join(agent.Args, " "))
+		quoteShellArgs(agent.Args))
 	caller := strconv.Itoa(os.Getppid())
 	_, err = daemon.DaemonSend(sessionName, launchCmd, caller)
 	if err != nil {
@@ -184,6 +199,75 @@ func Launch(args []string) {
 
 	// Print session name to stdout for scripting
 	fmt.Println(sessionName)
+}
+
+func quoteShellArgs(args []string) string {
+	quoted := make([]string, 0, len(args))
+	for _, arg := range args {
+		quoted = append(quoted, quoteShellArg(arg))
+	}
+	return strings.Join(quoted, " ")
+}
+
+func quoteShellArg(arg string) string {
+	if arg == "" {
+		return `""`
+	}
+	if strings.IndexFunc(arg, func(r rune) bool {
+		return r == ' ' || r == '\t' || r == '"' || r == '&' || r == '|' || r == '<' || r == '>' || r == '^'
+	}) == -1 {
+		return arg
+	}
+	return `"` + strings.ReplaceAll(arg, `"`, `\"`) + `"`
+}
+
+func maybeCreateLaunchWorktree(cwd, agentName string) (string, bool, error) {
+	repoRoot, err := gitOutput(cwd, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return cwd, false, nil
+	}
+	repoRoot = filepath.Clean(repoRoot)
+
+	if isDeckpilotManagedWorktree(repoRoot) {
+		return cwd, false, nil
+	}
+
+	prefix, err := gitOutput(cwd, "rev-parse", "--show-prefix")
+	if err != nil {
+		return cwd, false, fmt.Errorf("git rev-parse --show-prefix: %w", err)
+	}
+
+	worktreeRoot := managedWorktreesDir()
+	if err := os.MkdirAll(worktreeRoot, 0o700); err != nil {
+		return cwd, false, fmt.Errorf("mkdir %s: %w", worktreeRoot, err)
+	}
+
+	worktreePath := filepath.Join(worktreeRoot, fmt.Sprintf("%s-%s-%d",
+		filepath.Base(repoRoot), agentName, time.Now().UnixNano()))
+	cmd := exec.Command("git", "-C", repoRoot, "worktree", "add", "--detach", worktreePath, "HEAD")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return cwd, false, fmt.Errorf("git worktree add: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+
+	launchCwd := filepath.Join(worktreePath, filepath.FromSlash(strings.TrimSpace(prefix)))
+	if st, err := os.Stat(launchCwd); err != nil || !st.IsDir() {
+		launchCwd = worktreePath
+	}
+	return launchCwd, true, nil
+}
+
+func gitOutput(cwd string, args ...string) (string, error) {
+	cmd := exec.Command("git", append([]string{"-C", cwd}, args...)...)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func isDeckpilotManagedWorktree(path string) bool {
+	rel, err := filepath.Rel(managedWorktreesDir(), path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func FindGhostty() string {

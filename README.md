@@ -96,18 +96,24 @@ ghostty-39   winui3   stalled
 ### `launch` — Start an agent
 
 ```bash
-deckpilot launch <agent> <prompt...> [--cwd DIR] [--no-meta-prompt]
+deckpilot launch <agent> <prompt...> [--cwd DIR] [--shared-cwd] [--no-meta-prompt]
 ```
 
 Starts a new Ghostty window, waits for the agent to be ready, then sends the prompt. Prints the session name to stdout for use in scripts.
 
-| Agent  | Command                                  | Ready string |
-|--------|------------------------------------------|--------------|
-| claude | `claude --dangerously-skip-permissions`  | `>`          |
-| sonnet | `claude --model sonnet`                  | `>`          |
-| haiku  | `claude --model haiku`                   | `>`          |
-| codex  | `codex --full-auto`                      | `›`          |
-| gemini | `gemini`                                 | `>`          |
+| Agent  | Command                                      | Ready string |
+|--------|----------------------------------------------|--------------|
+| claude | `claude --dangerously-skip-permissions`      | `>`          |
+| sonnet | `claude --dangerously-skip-permissions --model sonnet` | `>` |
+| haiku  | `claude --dangerously-skip-permissions --model haiku`  | `>` |
+| codex  | `codex --full-auto`                          | `›`          |
+| gemini | `gemini`                                     | `>`          |
+
+When launched from inside a git repository, `deckpilot launch` creates a
+detached worktree under `~/.deckpilot/worktrees/` and runs the agent there by
+default. This keeps auto-approved sessions away from the shared dirty worktree.
+Use `--shared-cwd` only when the session must operate in the original working
+tree.
 
 #### Prompt persistence and `--no-meta-prompt`
 

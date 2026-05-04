@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -188,9 +189,23 @@ func sweepLaunchMetaByLiveness(dir string, dryRun bool) (removed int, missing bo
 			continue
 		}
 		path := filepath.Join(dir, name)
+		meta, hasMeta := readLaunchMetaFile(path)
+		worktreePath, hasWorktree := "", false
+		if hasMeta {
+			worktreePath, hasWorktree = managedWorktreeRootForPath(meta.Cwd)
+		}
 		if dryRun {
 			fmt.Printf("[dry-run] would delete dead launch-meta: %s\n", path)
+			if hasWorktree {
+				fmt.Printf("[dry-run] would remove managed worktree: %s\n", worktreePath)
+			}
 			continue
+		}
+		if hasWorktree {
+			if err := removeManagedWorktree(worktreePath); err != nil {
+				fmt.Fprintf(os.Stderr, "failed to remove managed worktree %s: %v\n", worktreePath, err)
+				continue
+			}
 		}
 		if err := os.Remove(path); err != nil {
 			fmt.Fprintf(os.Stderr, "failed to delete %s: %v\n", path, err)
@@ -199,4 +214,48 @@ func sweepLaunchMetaByLiveness(dir string, dryRun bool) (removed int, missing bo
 		removed++
 	}
 	return removed, false, false
+}
+
+func readLaunchMetaFile(path string) (LaunchMeta, bool) {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return LaunchMeta{}, false
+	}
+	var meta LaunchMeta
+	if err := json.Unmarshal(body, &meta); err != nil {
+		return LaunchMeta{}, false
+	}
+	return meta, true
+}
+
+func managedWorktreeRootForPath(path string) (string, bool) {
+	if path == "" {
+		return "", false
+	}
+	rel, err := filepath.Rel(managedWorktreesDir(), path)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	if len(parts) == 0 || parts[0] == "" {
+		return "", false
+	}
+	return filepath.Join(managedWorktreesDir(), parts[0]), true
+}
+
+func removeManagedWorktree(path string) error {
+	if _, ok := managedWorktreeRootForPath(path); !ok {
+		return fmt.Errorf("refusing to remove unmanaged path")
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil
+	}
+	cmd := exec.Command("git", "-C", path, "worktree", "remove", "--force", path)
+	cmd.Dir = managedWorktreesDir()
+	if out, err := cmd.CombinedOutput(); err != nil {
+		if rmErr := os.RemoveAll(path); rmErr != nil {
+			return fmt.Errorf("git worktree remove: %w: %s; fallback remove: %w", err, strings.TrimSpace(string(out)), rmErr)
+		}
+	}
+	return nil
 }

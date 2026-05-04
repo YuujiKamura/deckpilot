@@ -214,14 +214,15 @@ func TestWriteLaunchMeta_RedactedScrubsPrompt(t *testing.T) {
 // prompt body.
 func TestParseLaunchArgs(t *testing.T) {
 	cases := []struct {
-		name           string
-		args           []string
-		defaultCwd     string
-		wantAgent      string
-		wantPrompt     string
-		wantCwd        string
-		wantNoMeta     bool
-		wantErrSubstr  string
+		name          string
+		args          []string
+		defaultCwd    string
+		wantAgent     string
+		wantPrompt    string
+		wantCwd       string
+		wantNoMeta    bool
+		wantSharedCwd bool
+		wantErrSubstr string
 	}{
 		{
 			name:       "basic",
@@ -256,6 +257,15 @@ func TestParseLaunchArgs(t *testing.T) {
 			wantPrompt: "do thing",
 			wantCwd:    "/w",
 			wantNoMeta: true,
+		},
+		{
+			name:          "shared cwd opt out",
+			args:          []string{"claude", "do", "thing", "--shared-cwd"},
+			defaultCwd:    "/d",
+			wantAgent:     "claude",
+			wantPrompt:    "do thing",
+			wantCwd:       "/d",
+			wantSharedCwd: true,
 		},
 		{
 			name:          "missing prompt",
@@ -299,6 +309,9 @@ func TestParseLaunchArgs(t *testing.T) {
 			}
 			if got.NoMetaPrompt != c.wantNoMeta {
 				t.Errorf("NoMetaPrompt=%v want %v", got.NoMetaPrompt, c.wantNoMeta)
+			}
+			if got.SharedCwd != c.wantSharedCwd {
+				t.Errorf("SharedCwd=%v want %v", got.SharedCwd, c.wantSharedCwd)
 			}
 		})
 	}

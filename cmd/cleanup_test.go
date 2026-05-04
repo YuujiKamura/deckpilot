@@ -220,3 +220,68 @@ func TestCleanup_MissingDirIsNoError(t *testing.T) {
 	// return cleanly.
 	Cleanup(nil)
 }
+
+func TestManagedWorktreeRootForPath(t *testing.T) {
+	tempHome := t.TempDir()
+	withCleanupSeams(t, tempHome, time.Now(), func() (string, error) { return "[]", nil })
+
+	root := managedWorktreesDir()
+	inside := filepath.Join(root, "repo-claude-123", "cmd")
+	got, ok := managedWorktreeRootForPath(inside)
+	if !ok {
+		t.Fatalf("expected managed worktree root for %s", inside)
+	}
+	want := filepath.Join(root, "repo-claude-123")
+	if got != want {
+		t.Fatalf("root mismatch: got %q want %q", got, want)
+	}
+
+	if got, ok := managedWorktreeRootForPath(filepath.Join(tempHome, "repo")); ok {
+		t.Fatalf("unmanaged path returned root %q", got)
+	}
+}
+
+func TestReadLaunchMetaFile(t *testing.T) {
+	dir := t.TempDir()
+	valid := filepath.Join(dir, "valid.json")
+	if err := os.WriteFile(valid, []byte(`{"session_name":"s","agent":"claude","cwd":"/w","prompt":"p"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := readLaunchMetaFile(valid)
+	if !ok {
+		t.Fatal("expected valid launch meta to parse")
+	}
+	if got.SessionName != "s" || got.Cwd != "/w" {
+		t.Fatalf("unexpected meta: %+v", got)
+	}
+
+	invalid := filepath.Join(dir, "invalid.json")
+	if err := os.WriteFile(invalid, []byte(`not-json`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := readLaunchMetaFile(invalid); ok {
+		t.Fatal("invalid launch meta should return ok=false")
+	}
+	if _, ok := readLaunchMetaFile(filepath.Join(dir, "missing.json")); ok {
+		t.Fatal("missing launch meta should return ok=false")
+	}
+}
+
+func TestRemoveManagedWorktreeRefusesUnmanagedPath(t *testing.T) {
+	tempHome := t.TempDir()
+	withCleanupSeams(t, tempHome, time.Now(), func() (string, error) { return "[]", nil })
+
+	if err := removeManagedWorktree(filepath.Join(tempHome, "outside")); err == nil {
+		t.Fatal("expected unmanaged path removal to be refused")
+	}
+}
+
+func TestRemoveManagedWorktreeMissingManagedPathIsNoop(t *testing.T) {
+	tempHome := t.TempDir()
+	withCleanupSeams(t, tempHome, time.Now(), func() (string, error) { return "[]", nil })
+
+	missing := filepath.Join(managedWorktreesDir(), "missing-worktree")
+	if err := removeManagedWorktree(missing); err != nil {
+		t.Fatalf("missing managed path should be noop: %v", err)
+	}
+}
