@@ -40,7 +40,10 @@ func (d *Daemon) handleConn(conn net.Conn) {
 
 	parts := strings.SplitN(line, "|", 5)
 	cmd := parts[0]
-	log.Printf("handleConn: raw line=%q parts=%v", line, parts)
+	// Trace-only: PING fires every 1-2s per CLI tab; logging at INFO
+	// turns the daemon log into a multi-MB/hour ring buffer. Gate
+	// behind DECKPILOT_DEBUG; lifecycle/error lines stay on log.Printf.
+	debugf("handleConn: raw line=%q parts=%v", line, parts)
 
 	var resp string
 	switch cmd {
@@ -309,7 +312,7 @@ func sanitizeStatusToken(s string) string {
 }
 
 func (d *Daemon) handleShow(parts []string) string {
-	log.Printf("handleShow: parts=%v len=%d", parts, len(parts))
+	debugf("handleShow: parts=%v len=%d", parts, len(parts))
 	// parts: ["SHOW", name, mode, caller]
 	caller := ""
 	if len(parts) >= 4 {
@@ -321,17 +324,17 @@ func (d *Daemon) handleShow(parts []string) string {
 		name = parts[1]
 	}
 
-	log.Printf("handleShow: caller=%q name=%q", caller, name)
+	debugf("handleShow: caller=%q name=%q", caller, name)
 
 	// Resolve name from lastUsed if empty
 	if name == "" {
 		if caller == "" {
-			log.Printf("handleShow: caller is empty, returning error")
+			debugf("handleShow: caller is empty, returning error")
 			return "ERR|session name required\n"
 		}
-		log.Printf("handleShow: looking up lastUsed for caller=%q", caller)
+		debugf("handleShow: looking up lastUsed for caller=%q", caller)
 		last, ok := d.getLastUsed(caller)
-		log.Printf("handleShow: getLastUsed(%q) = %q, ok=%v", caller, last, ok)
+		debugf("handleShow: getLastUsed(%q) = %q, ok=%v", caller, last, ok)
 		if !ok {
 			return "ERR|no recent session for this caller\n"
 		}
