@@ -9,3 +9,4 @@ spec-prompt/
 coverage
 coverage.out
 coverage.html
+.dispatch/
