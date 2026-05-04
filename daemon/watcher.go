@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -169,6 +170,36 @@ func (w *Watcher) handleRequest(req pipeRequest) {
 	req.result <- res
 }
 
+// tailErrorClassification carries the decision tree for how poll() should
+// react to a Tail() error. Unit-tested separately so that BUSY / NO_TABS /
+// transport-error policies cannot regress silently.
+type tailErrorClassification struct {
+	// AdvanceRetry feeds the deadRetries counter; reaching the threshold
+	// promotes the session to dead. Use only for genuinely unhealthy errors.
+	AdvanceRetry bool
+	// MarkDead is set only for session-fatal signals (NO_TABS) — fatal here
+	// means deadRetries is bypassed entirely.
+	MarkDead bool
+	// NewStatus is an optional status override for this poll cycle. Empty
+	// means leave the existing status alone (subject to updateContent).
+	NewStatus string
+}
+
+func classifyTailError(err error) tailErrorClassification {
+	if err == nil {
+		return tailErrorClassification{}
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "NO_TABS") {
+		return tailErrorClassification{MarkDead: true}
+	}
+	if pipe.IsBusy(msg) {
+		// Ghostty backpressure — transient, do not erode dead-retry budget.
+		return tailErrorClassification{NewStatus: "busy"}
+	}
+	return tailErrorClassification{AdvanceRetry: true}
+}
+
 func (w *Watcher) poll() {
 	// 1. Check OS-level hang FIRST (independent of pipe health)
 	isHung := IsHungAppWindow(w.hwnd)
@@ -198,8 +229,9 @@ func (w *Watcher) poll() {
 	content, err := w.client.Tail(50)
 	if err != nil {
 		errStr := err.Error()
-		// NO_TABS = terminal has no tabs (session ended). Immediate dead, no retry.
-		if strings.Contains(errStr, "NO_TABS") {
+		c := classifyTailError(err)
+
+		if c.MarkDead {
 			w.mu.Lock()
 			if w.status != "stalled" {
 				w.status = "dead"
@@ -210,7 +242,24 @@ func (w *Watcher) poll() {
 			log.Printf("watcher[%s]: NO_TABS — session ended, marking dead", w.name)
 			return
 		}
-		// Other errors: retry 3 times before dead
+
+		if c.NewStatus == "busy" {
+			// Backpressure from Ghostty (e.g. BUSY|renderer_locked). Transient
+			// — do not advance dead-retry budget. Surface the condition via
+			// status so handleShow can label the cached buffer as stale.
+			w.mu.Lock()
+			if w.status != "stalled" && w.status != "dead" {
+				w.status = "busy"
+			}
+			w.lastError = errStr
+			w.pollFail++
+			w.mu.Unlock()
+			log.Printf("watcher[%s]: pipe.Tail backpressure (status=busy): %v", w.name, err)
+			return
+		}
+
+		// Default branch (c.AdvanceRetry): genuine transport-level errors.
+		// Retry up to 3 times before promoting to dead.
 		w.mu.Lock()
 		w.deadRetries++
 		w.pollFail++
@@ -370,12 +419,36 @@ func (w *Watcher) FreshHistory() (string, error) {
 	return res.content, res.err
 }
 
-// PausePolling stops the watcher from polling until the returned channel is closed.
-// Use this when sending to the pipe from outside the watcher goroutine.
-func (w *Watcher) PausePolling() chan struct{} {
+// ErrPausePollingTimeout is returned by PausePolling when the watcher
+// goroutine does not pick up the pause request within the supplied timeout.
+// This typically means the Run() goroutine has exited (dead session) or
+// is itself stuck — callers should treat this as "pause unavailable" and
+// proceed without pausing rather than blocking indefinitely.
+var ErrPausePollingTimeout = errors.New("watcher pause polling timed out")
+
+// PausePolling stops the watcher from polling until the returned channel is
+// closed. Use this when sending to the pipe from outside the watcher
+// goroutine. If the runner is not listening on pauseCh within `timeout`,
+// returns ErrPausePollingTimeout — caller should fall through. A zero
+// timeout makes the operation a non-blocking probe.
+func (w *Watcher) PausePolling(timeout time.Duration) (chan struct{}, error) {
 	resumeCh := make(chan struct{})
-	w.pauseCh <- resumeCh
-	return resumeCh
+	if timeout <= 0 {
+		select {
+		case w.pauseCh <- resumeCh:
+			return resumeCh, nil
+		default:
+			return nil, ErrPausePollingTimeout
+		}
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case w.pauseCh <- resumeCh:
+		return resumeCh, nil
+	case <-timer.C:
+		return nil, ErrPausePollingTimeout
+	}
 }
 
 // Status returns the current status.

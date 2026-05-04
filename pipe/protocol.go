@@ -37,6 +37,57 @@ func IsError(resp string) (string, bool) {
 	return "", false
 }
 
+// BusyKind classifies a Ghostty pipe-server response for backpressure-related
+// conditions. These are *transient* — distinct from session-fatal errors like
+// NO_TABS, which mark the session dead.
+type BusyKind int
+
+const (
+	BusyNone BusyKind = iota
+	BusyRendererLocked
+	BusyDataLaneFull
+	BusyUIThreadBusy
+	BusyOther // BUSY|... or TIMEOUT|... we have not seen before
+)
+
+// stripBusyPrefixes normalises any of the forms the deckpilot stack sees
+// error strings in (raw protocol, stripped post-IsError, wrapped by
+// pipe.Client.SendRecv as `server: <msg>`, or nested `server: ERR|...`)
+// into a bare `BUSY|...` / `TIMEOUT|...` token suitable for substring
+// inspection. Strip `server: ` first so any inner `ERR|` is then removed
+// in the second pass.
+func stripBusyPrefixes(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "server: ")
+	s = strings.TrimPrefix(s, PrefixERR)
+	return s
+}
+
+// IsBusy reports whether the input represents a transient backpressure
+// condition from the pipe server. Inputs may be raw protocol responses,
+// stripped error messages, or wrapped error strings. Session-fatal errors
+// (NO_TABS) and unrelated errors return false.
+func IsBusy(s string) bool {
+	return ClassifyBusy(s) != BusyNone
+}
+
+// ClassifyBusy maps an error/response string to a BusyKind. Returns BusyNone
+// for non-busy strings.
+func ClassifyBusy(s string) BusyKind {
+	body := stripBusyPrefixes(s)
+	switch {
+	case strings.HasPrefix(body, "BUSY|renderer_locked"):
+		return BusyRendererLocked
+	case strings.HasPrefix(body, "BUSY|data_lane_full"):
+		return BusyDataLaneFull
+	case strings.HasPrefix(body, "TIMEOUT|ui_thread_busy"):
+		return BusyUIThreadBusy
+	case strings.HasPrefix(body, "BUSY|") || strings.HasPrefix(body, "TIMEOUT|"):
+		return BusyOther
+	}
+	return BusyNone
+}
+
 // ParseCmdID extracts cmd_id from QUEUED|session|type|cmd_id response.
 func ParseCmdID(resp string) (uint32, bool) {
 	parts := strings.Split(strings.TrimSpace(resp), "|")

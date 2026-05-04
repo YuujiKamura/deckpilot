@@ -137,8 +137,16 @@ func (d *Daemon) handleSend(parts []string) string {
 			w.Revive()
 		}
 		if w.Status() != "dead" {
-			resumeCh = w.PausePolling()
-			defer close(resumeCh)
+			// 2s window: if the runner is alive it picks up almost
+			// instantly. If it does not, the goroutine is gone or wedged
+			// — proceed without pausing rather than blocking handleSend.
+			rc, err := w.PausePolling(2 * time.Second)
+			if err != nil {
+				log.Printf("watcher[%s]: PausePolling failed (%v); proceeding unpaused", name, err)
+			} else {
+				resumeCh = rc
+				defer close(resumeCh)
+			}
 		} else {
 			w = nil // don't use dead watcher for Client() access
 		}
@@ -266,6 +274,23 @@ func (d *Daemon) handleList() string {
 	return fmt.Sprintf("OK|%s\n", string(b))
 }
 
+// composeShowStatus builds the status field returned in the SHOW response.
+// When FreshTail (or any fresh-content path) failed and the caller is about
+// to return cached LastContent, the status is prefixed with "stale:" so the
+// client can distinguish a live buffer from a frozen cache. An empty
+// watcher status is normalised to "unknown" rather than emitting a bare
+// "stale:" token that downstream parsers might split incorrectly.
+func composeShowStatus(freshErr error, watcherStatus string) string {
+	s := watcherStatus
+	if s == "" {
+		s = "unknown"
+	}
+	if freshErr != nil {
+		return "stale:" + s
+	}
+	return s
+}
+
 func (d *Daemon) handleShow(parts []string) string {
 	log.Printf("handleShow: parts=%v len=%d", parts, len(parts))
 	// parts: ["SHOW", name, mode, caller]
@@ -324,16 +349,24 @@ func (d *Daemon) handleShow(parts []string) string {
 
 	var content string
 	var err error
+	// freshErr captures whether the buffer in `content` is a live read.
+	// nil = fresh; non-nil = falling back to LastContent or stale source.
+	// Cleared when a direct-pipe fallback succeeds.
+	var freshErr error
 	switch mode {
 	case "history":
 		content, err = w.FreshHistory()
 		if err != nil {
-			// Fallback to direct pipe access
+			freshErr = err
+			// Fallback to direct pipe access — a direct success is live, so
+			// clear staleness; otherwise we error out and never reach the
+			// composeShowStatus path.
 			if pipePath, pipeOk := d.resolvePipePath(name); pipeOk {
 				if direct, directErr := pipe.History(pipePath); directErr == nil && direct != "" {
 					content = direct
 					log.Printf("handleShow: recovered history via direct pipe.History for %s", name)
 					err = nil
+					freshErr = nil
 				}
 			}
 			if err != nil {
@@ -344,13 +377,16 @@ func (d *Daemon) handleShow(parts []string) string {
 		content, err = w.FreshTail(50)
 		if err != nil {
 			log.Printf("handleShow: FreshTail error: %v, falling back to LastContent", err)
+			freshErr = err
 			content = w.LastContent()
 		}
-		// If content is still empty, try direct pipe access as fallback
+		// If content is still empty, try direct pipe access as fallback.
+		// A direct success clears staleness — that read is live.
 		if content == "" {
 			if pipePath, pipeOk := d.resolvePipePath(name); pipeOk {
 				if direct, directErr := pipe.Tail(pipePath, 50); directErr == nil && direct != "" {
 					content = direct
+					freshErr = nil
 					log.Printf("handleShow: recovered content via direct pipe.Tail for %s", name)
 				}
 			}
@@ -360,7 +396,7 @@ func (d *Daemon) handleShow(parts []string) string {
 	d.setLastUsed(caller, name)
 
 	encoded := base64.StdEncoding.EncodeToString([]byte(content))
-	return fmt.Sprintf("OK|%s|%s\n", encoded, w.Status())
+	return fmt.Sprintf("OK|%s|%s\n", encoded, composeShowStatus(freshErr, w.Status()))
 }
 
 // sendViaWS sends a message to a ghostty-web session via WebSocket using the CP protocol.
