@@ -13,6 +13,21 @@ import (
 	"github.com/YuujiKamura/deckpilot/pipe"
 )
 
+// pipeClient is the pipe I/O contract for a Ghostty session, abstracted
+// from *pipe.Client so watcher logic can be exercised under a fake in
+// unit tests. Kept unexported because no caller outside the daemon
+// package consumes it directly — handleSend reaches the client via the
+// (*Watcher).Client() accessor which returns the concrete *pipe.Client.
+type pipeClient interface {
+	SendKeys(text string) (uint32, error)
+	SendRaw(data []byte) (uint32, error)
+	WaitForAck(cmdID uint32) error
+	Tail(lines int) (string, error)
+	History() (string, error)
+	Ping() error
+	Close() error
+}
+
 // BufferNotification moved to daemon/types.go.
 
 // pipeRequest is a command queued to the watcher's pipe goroutine.
@@ -54,7 +69,7 @@ type Watcher struct {
 	onNotify    func(BufferNotification)
 	reqCh       chan pipeRequest
 	pauseCh     chan chan struct{} // send pause signal, receive resume signal
-	client      *pipe.Client
+	client      pipeClient
 }
 
 // NewWatcher creates a Watcher for the given session.
@@ -468,9 +483,17 @@ func (w *Watcher) LastContent() string {
 	return w.lastContent
 }
 
-// Client returns the persistent pipe client for this session.
+// Client returns the concrete pipe client used by this watcher. Kept as
+// *pipe.Client (not the unexported pipeClient interface) so external
+// callers do not see an unexported type — Go vet flags that pattern.
+// The watcher itself uses the interface field internally for testability.
 func (w *Watcher) Client() *pipe.Client {
-	return w.client
+	if c, ok := w.client.(*pipe.Client); ok {
+		return c
+	}
+	// Tests inject a fakeClient via newWatcherForTest. Those tests must
+	// not call Client(); reaching here means a test misuse.
+	panic("Watcher.Client() called on test-injected fake; use w.client directly in tests")
 }
 
 // WatcherProfile holds session profiling counters.
