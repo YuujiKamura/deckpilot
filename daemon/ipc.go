@@ -438,7 +438,7 @@ func sendViaWS(wsURL, msg string) (string, error) {
 
 	encoded := base64.StdEncoding.EncodeToString([]byte(msg))
 	payload := fmt.Sprintf("INPUT|deckpilot|%s", encoded)
-	log.Printf("sendViaWS: sending %q to %s", payload, wsURL)
+	debugf("sendViaWS: sending %q to %s", payload, wsURL)
 
 	if err := conn.WriteMessage(websocket.TextMessage, []byte(payload)); err != nil {
 		return "", fmt.Errorf("ws write: %w", err)
@@ -451,7 +451,7 @@ func sendViaWS(wsURL, msg string) (string, error) {
 		return "", fmt.Errorf("ws read: %w", err)
 	}
 	resp := string(respBytes)
-	log.Printf("sendViaWS: response %q", resp)
+	debugf("sendViaWS: response %q", resp)
 	return resp, nil
 }
 
