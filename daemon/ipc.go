@@ -277,18 +277,35 @@ func (d *Daemon) handleList() string {
 // composeShowStatus builds the status field returned in the SHOW response.
 // When FreshTail (or any fresh-content path) failed and the caller is about
 // to return cached LastContent, the status is prefixed with "stale:" so the
-// client can distinguish a live buffer from a frozen cache. An empty
-// watcher status is normalised to "unknown" rather than emitting a bare
-// "stale:" token that downstream parsers might split incorrectly.
+// client can distinguish a live buffer from a frozen cache.
+//
+// Defensive normalisation:
+//   - Empty status → "unknown" (avoids bare "stale:" or empty-field parsing).
+//   - "|", CR, LF stripped from the status (wire format is
+//     "OK|<base64>|<status>\n" — these characters in the status would
+//     break the client parser or split the response into multiple lines,
+//     which is a protocol-injection surface).
+//   - "stale:" not double-prefixed (defensive against cascaded fallbacks).
 func composeShowStatus(freshErr error, watcherStatus string) string {
 	s := watcherStatus
 	if s == "" {
 		s = "unknown"
 	}
-	if freshErr != nil {
-		return "stale:" + s
+	s = sanitizeStatusToken(s)
+	if freshErr != nil && !strings.HasPrefix(s, "stale:") {
+		s = "stale:" + s
 	}
 	return s
+}
+
+// statusTokenSanitizer is reused across all SHOW responses; allocating a
+// fresh Replacer per call would be wasteful on the IPC hot path.
+var statusTokenSanitizer = strings.NewReplacer("|", "_", "\r", "_", "\n", "_")
+
+// sanitizeStatusToken replaces any wire-format separator with "_" so the
+// status field cannot inject extra response fields or split the line.
+func sanitizeStatusToken(s string) string {
+	return statusTokenSanitizer.Replace(s)
 }
 
 func (d *Daemon) handleShow(parts []string) string {

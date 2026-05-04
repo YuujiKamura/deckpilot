@@ -50,17 +50,23 @@ const (
 	BusyOther // BUSY|... or TIMEOUT|... we have not seen before
 )
 
-// stripBusyPrefixes normalises any of the forms the deckpilot stack sees
-// error strings in (raw protocol, stripped post-IsError, wrapped by
-// pipe.Client.SendRecv as `server: <msg>`, or nested `server: ERR|...`)
-// into a bare `BUSY|...` / `TIMEOUT|...` token suitable for substring
-// inspection. Strip `server: ` first so any inner `ERR|` is then removed
-// in the second pass.
-func stripBusyPrefixes(s string) string {
+// stripEnvelopePrefixes normalises any envelope wrapping the deckpilot
+// stack might apply (raw protocol `ERR|...`, server-wrapped `server: ...`,
+// nested combinations of either, in any order) into a bare protocol-token
+// body (e.g. `BUSY|...`, `TIMEOUT|...`, `NO_TABS`) suitable for prefix
+// inspection. Loops until no more known prefix matches so callers do not
+// have to know the wrap depth or order; this defends against legacy
+// clients, double-wrapping proxies, and future pipe-server changes.
+func stripEnvelopePrefixes(s string) string {
 	s = strings.TrimSpace(s)
-	s = strings.TrimPrefix(s, "server: ")
-	s = strings.TrimPrefix(s, PrefixERR)
-	return s
+	for {
+		before := s
+		s = strings.TrimPrefix(s, "server: ")
+		s = strings.TrimPrefix(s, PrefixERR)
+		if s == before {
+			return s
+		}
+	}
 }
 
 // IsBusy reports whether the input represents a transient backpressure
@@ -71,10 +77,35 @@ func IsBusy(s string) bool {
 	return ClassifyBusy(s) != BusyNone
 }
 
+// IsNoTabs reports whether the input represents the session-fatal
+// NO_TABS signal from the pipe server (terminal has no tabs, session
+// ended). The match is token-boundary aware: `NO_TABS_ALLOWED` or
+// arbitrary message text containing the substring NO_TABS does NOT
+// trigger — only the standalone protocol token does. Accepts the same
+// envelope variants as IsBusy.
+func IsNoTabs(s string) bool {
+	body := stripEnvelopePrefixes(s)
+	const tok = "NO_TABS"
+	if !strings.HasPrefix(body, tok) {
+		return false
+	}
+	rest := body[len(tok):]
+	if rest == "" {
+		return true
+	}
+	// Token continues if the next byte is part of the same identifier.
+	c := rest[0]
+	isWordChar := (c >= 'a' && c <= 'z') ||
+		(c >= 'A' && c <= 'Z') ||
+		(c >= '0' && c <= '9') ||
+		c == '_'
+	return !isWordChar
+}
+
 // ClassifyBusy maps an error/response string to a BusyKind. Returns BusyNone
 // for non-busy strings.
 func ClassifyBusy(s string) BusyKind {
-	body := stripBusyPrefixes(s)
+	body := stripEnvelopePrefixes(s)
 	switch {
 	case strings.HasPrefix(body, "BUSY|renderer_locked"):
 		return BusyRendererLocked

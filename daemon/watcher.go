@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -190,7 +189,11 @@ func classifyTailError(err error) tailErrorClassification {
 		return tailErrorClassification{}
 	}
 	msg := err.Error()
-	if strings.Contains(msg, "NO_TABS") {
+	// NO_TABS is session-fatal and dominates over other classifications.
+	// Use the token-boundary check rather than substring match so that
+	// diagnostic strings merely *containing* NO_TABS as a word fragment
+	// (e.g. "NO_TABS_ALLOWED") do not falsely kill live sessions.
+	if pipe.IsNoTabs(msg) {
 		return tailErrorClassification{MarkDead: true}
 	}
 	if pipe.IsBusy(msg) {
