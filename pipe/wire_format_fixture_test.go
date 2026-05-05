@@ -85,7 +85,7 @@ func loadFixtures(t *testing.T) []fixtureBlock {
 		hasReq, hasResp = false, false
 	}
 
-	for _, raw := range strings.Split(string(data), "\n") {
+	for raw := range strings.SplitSeq(string(data), "\n") {
 		line := strings.TrimRight(raw, "\r")
 		if line == "===" {
 			flush()
@@ -94,8 +94,7 @@ func loadFixtures(t *testing.T) []fixtureBlock {
 		if line == "" {
 			continue
 		}
-		if strings.HasPrefix(line, "# ") {
-			body := strings.TrimPrefix(line, "# ")
+		if body, ok := strings.CutPrefix(line, "# "); ok {
 			// The block's identifying note is the first `# ` line that
 			// starts with `verb:` — same convention as the Zig decoder.
 			if strings.HasPrefix(body, "verb:") {
@@ -106,13 +105,13 @@ func loadFixtures(t *testing.T) []fixtureBlock {
 		if strings.HasPrefix(line, "#") {
 			continue
 		}
-		if strings.HasPrefix(line, ">>> ") {
-			req = decodeFixtureEscapes(strings.TrimPrefix(line, ">>> "))
+		if rest, ok := strings.CutPrefix(line, ">>> "); ok {
+			req = decodeFixtureEscapes(rest)
 			hasReq = true
 			continue
 		}
-		if strings.HasPrefix(line, "<<< ") {
-			resp = decodeFixtureEscapes(strings.TrimPrefix(line, "<<< "))
+		if rest, ok := strings.CutPrefix(line, "<<< "); ok {
+			resp = decodeFixtureEscapes(rest)
 			hasResp = true
 			continue
 		}
