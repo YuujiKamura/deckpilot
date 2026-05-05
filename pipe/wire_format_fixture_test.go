@@ -123,10 +123,10 @@ func loadFixtures(t *testing.T) []fixtureBlock {
 
 func TestFixturesParse(t *testing.T) {
 	blocks := loadFixtures(t)
-	if len(blocks) != 3 {
-		t.Fatalf("expected 3 fixture blocks, got %d", len(blocks))
+	if len(blocks) != 4 {
+		t.Fatalf("expected 4 fixture blocks, got %d", len(blocks))
 	}
-	for i, want := range []string{"fresh", "stale", "BUSY"} {
+	for i, want := range []string{"fresh", "stale", "BUSY", "PING"} {
 		if !strings.Contains(blocks[i].note, want) {
 			t.Errorf("block %d: note %q does not contain %q", i, blocks[i].note, want)
 		}
@@ -206,13 +206,52 @@ func TestTailBusyClassification(t *testing.T) {
 	}
 }
 
-// TestFixtureRequestsAreTAIL: sanity that the fixture file did not
-// silently get repurposed for a different verb.
+// TestFixtureRequestsAreTAIL: sanity that the first three fixture blocks
+// (the original TAIL increment) did not silently get repurposed for a
+// different verb. Newer verbs (PING, ...) live in subsequent blocks and
+// have their own dedicated assertions below.
 func TestFixtureRequestsAreTAIL(t *testing.T) {
 	blocks := loadFixtures(t)
-	for i, b := range blocks {
-		if !strings.HasPrefix(b.request, "TAIL") {
-			t.Errorf("block %d: request %q does not start with TAIL", i, b.request)
+	for i := 0; i < 3 && i < len(blocks); i++ {
+		if !strings.HasPrefix(blocks[i].request, "TAIL") {
+			t.Errorf("block %d: request %q does not start with TAIL", i, blocks[i].request)
 		}
+	}
+}
+
+// TestPingFreshClassification: the PING fresh response is documented as
+// not-error; the client's parsing surface (PrefixPONG check in
+// pipe/client.go:286) must accept the byte-exact PONG line emitted by
+// the server. Locks the 4-field PONG|<session>|<pid>|<hwnd>\n shape so
+// any drift on either side trips the pact.
+func TestPingFreshClassification(t *testing.T) {
+	blocks := loadFixtures(t)
+	if len(blocks) < 4 {
+		t.Fatalf("expected >=4 fixture blocks for PING, got %d", len(blocks))
+	}
+	ping := blocks[3]
+
+	if ping.request != "PING\n" {
+		t.Errorf("PING request: got %q, want %q", ping.request, "PING\n")
+	}
+
+	if msg, isErr := IsError(ping.response); isErr {
+		t.Fatalf("PING fresh classified as error (msg=%q); pact requires not-error", msg)
+	}
+	if k := ClassifyBusy(ping.response); k != BusyNone {
+		t.Errorf("PING fresh classified as busy (kind=%d); pact requires BusyNone", k)
+	}
+
+	// Lock the exact PONG bytes the mock server emits (pid=12345,
+	// hwnd_val=0xCAFE — see vendor/zig-control-plane/src/main.zig
+	// MockState defaults). Any field drift breaks here.
+	const wantResp = "PONG|test-session|12345|0xCAFE\n"
+	if ping.response != wantResp {
+		t.Errorf("PING response: got %q, want %q", ping.response, wantResp)
+	}
+
+	// The client's Ping() acceptance test is a HasPrefix on PrefixPONG.
+	if !strings.HasPrefix(ping.response, PrefixPONG) {
+		t.Errorf("PING response %q does not start with PrefixPONG=%q", ping.response, PrefixPONG)
 	}
 }
