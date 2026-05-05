@@ -50,7 +50,6 @@ func TestParseGhosttyResponse_TolerantOfUnknownPrefix(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		c := c
 		t.Run(strings.ReplaceAll(c, "\n", "\\n"), func(t *testing.T) {
 			defer func() {
 				if r := recover(); r != nil {
