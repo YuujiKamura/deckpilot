@@ -1,0 +1,16 @@
+# Canonical commit SHA for the CP wire-format fixture pact.
+#
+# The vendored copy at docs/cp-wire-format-fixtures.txt MUST match the
+# version of docs/wire-format-fixtures.txt at this commit in the upstream
+# zig-control-plane repo (https://github.com/YuujiKamura/zig-control-plane).
+#
+# The CI job .github/workflows/check-fixtures.yml fetches the upstream copy
+# at this SHA and fails the build on any byte-level drift.
+#
+# Bump procedure:
+#   1. Land the new fixtures upstream first (zig-control-plane), get a SHA.
+#   2. Run `make sync-fixtures` locally with ghostty-win pointing at that SHA.
+#   3. Update the SHA below in the same PR that bumps docs/cp-wire-format-fixtures.txt.
+#
+# One non-blank, non-comment line below: a 40-char hex SHA.
+1e00b4ddc427cf51e4d2930c8ed8f8b7b7abda73

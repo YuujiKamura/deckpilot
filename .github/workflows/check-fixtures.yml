@@ -1,0 +1,50 @@
+name: check-fixtures
+
+on:
+  push:
+    branches:
+      - main
+      - "feat/**"
+  pull_request:
+
+jobs:
+  check-fixtures:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve canonical SHA
+        id: pin
+        run: |
+          SHA=$(grep -E '^[0-9a-f]{40}$' .github/fixtures-pin.txt | head -n1)
+          if [ -z "$SHA" ]; then
+            echo "ERROR: no 40-char hex SHA found in .github/fixtures-pin.txt" >&2
+            exit 2
+          fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "Canonical SHA: $SHA"
+
+      - name: Fetch canonical fixture from upstream zig-control-plane
+        run: |
+          set -e
+          SHA="${{ steps.pin.outputs.sha }}"
+          URL="https://raw.githubusercontent.com/YuujiKamura/zig-control-plane/${SHA}/docs/wire-format-fixtures.txt"
+          echo "Fetching: $URL"
+          HTTP=$(curl -sSL -w "%{http_code}" -o canonical.txt "$URL")
+          if [ "$HTTP" != "200" ]; then
+            echo "ERROR: fetch failed with HTTP $HTTP" >&2
+            echo "The pinned SHA in .github/fixtures-pin.txt may not be pushed to upstream yet." >&2
+            exit 1
+          fi
+          wc -lc canonical.txt
+
+      - name: Diff canonical vs vendored copy
+        run: |
+          if ! diff -u canonical.txt docs/cp-wire-format-fixtures.txt; then
+            echo ""
+            echo "DRIFT: docs/cp-wire-format-fixtures.txt differs from canonical." >&2
+            echo "Resync with 'make sync-fixtures' (after pulling matching ghostty-win SHA)," >&2
+            echo "or bump .github/fixtures-pin.txt to a newer upstream SHA." >&2
+            exit 1
+          fi
+          echo "ok: docs/cp-wire-format-fixtures.txt matches canonical at pinned SHA"
