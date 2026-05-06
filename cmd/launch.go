@@ -168,11 +168,7 @@ func Launch(args []string) {
 	time.Sleep(2 * time.Second)
 
 	// Send cd + agent launch command.
-	// Ghostty on Windows defaults to cmd.exe, so use cmd syntax.
-	launchCmd := fmt.Sprintf("cd /d \"%s\" && %s %s",
-		cwd,
-		agent.Cmd,
-		quoteShellArgs(agent.Args))
+	launchCmd := buildAgentLaunchCommand(cwd, agent.Cmd, agent.Args)
 	caller := strconv.Itoa(os.Getppid())
 	_, err = daemon.DaemonSend(sessionName, launchCmd, caller)
 	if err != nil {
@@ -199,6 +195,23 @@ func Launch(args []string) {
 
 	// Print session name to stdout for scripting
 	fmt.Println(sessionName)
+}
+
+// buildAgentLaunchCommand constructs the cmd.exe-syntax string that deckpilot
+// sends into the ghostty-spawned cmd shell to start an agent. Ghostty on
+// Windows defaults to cmd.exe, so the wrapper uses `cd /d` + `&&`.
+//
+// The trailing ` & exit` is load-bearing: without it the wrapping cmd shell
+// survives after the agent exits, leaving an orphan ghostty window invisible
+// to `deckpilot list` (the daemon GCs the session entry but the cmd.exe
+// process keeps the ghostty surface alive). `&` (not `&&`) makes exit
+// unconditional on agent return code, so a non-zero agent exit still closes
+// the shell. See cmd/launch_orphan_prevention_test.go for the contract.
+func buildAgentLaunchCommand(cwd, cmd string, args []string) string {
+	return fmt.Sprintf(`cd /d "%s" && %s %s & exit`,
+		cwd,
+		cmd,
+		quoteShellArgs(args))
 }
 
 func quoteShellArgs(args []string) string {
