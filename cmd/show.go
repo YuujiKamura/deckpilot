@@ -90,7 +90,21 @@ func Show(args []string) {
 	}
 
 	fmt.Fprintf(os.Stderr, "[%s]\n", status)
-	fmt.Print(content)
+	marked, summary := markInputBox(content)
+	printInputBoxSummary(summary)
+	fmt.Print(marked)
+}
+
+// printInputBoxSummary echoes what markInputBox tagged onto stderr — a trusted
+// side channel separate from the (potentially terminal-controlled) stdout
+// buffer. A reader can cross-check the in-band "[入力欄/未送信]" marker against
+// this line: deckpilot tagged exactly one input box, and this is its content.
+func printInputBoxSummary(summary string) {
+	if summary == "" {
+		fmt.Fprintln(os.Stderr, "[input-box] none in this view")
+		return
+	}
+	fmt.Fprintf(os.Stderr, "[input-box] tagged: > %s\n", summary)
 }
 
 // runShowFollow polls the session buffer every 2 seconds and prints new content.
@@ -104,9 +118,13 @@ func runShowFollow(name, mode, caller string) {
 			fmt.Fprintf(os.Stderr, "show: %v\n", err)
 			os.Exit(1)
 		}
+		// Compare on the raw (pre-mark) content so the marker rewrite does
+		// not register as a change on every poll.
 		if content != last {
 			fmt.Fprintf(os.Stderr, "[%s]\n", status)
-			fmt.Print(content)
+			marked, summary := markInputBox(content)
+			printInputBoxSummary(summary)
+			fmt.Print(marked)
 			last = content
 		}
 		time.Sleep(2 * time.Second)
