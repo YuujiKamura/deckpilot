@@ -71,23 +71,41 @@ func New() *Daemon {
 // Run starts the daemon: handles single-instance takeover, starts background
 // discovery, and listens for IPC connections on the daemon pipe.
 func (d *Daemon) Run() error {
-	// 1. SINGLE-INSTANCE TAKEOVER: Detect existing daemon and request it to shut down.
-	// This ensures the new instance (potentially a newer build) takes priority.
-	// We do this BEFORE any heavy initialization to avoid startup stalls.
+	// 1. SINGLETON MUTEX FIRST: claim the singleton invariant before doing
+	// anything that touches an existing daemon. The previous order
+	// (takeover first, mutex second) was a "last instance wins" design:
+	// a double-launch would SHUTDOWN the healthy daemon and then itself
+	// die on a still-held mutex, leaving zero daemons (observed
+	// 2026-06-04 during initial smoke). The correct invariant is "first
+	// instance wins": if the mutex is already held, a healthy peer
+	// exists, and we must exit without disturbing its pipe.
+	mutexHandle, mutexExists, mutexErr := acquireSingletonMutex()
+	if mutexErr != nil {
+		return fmt.Errorf("acquire singleton mutex: %w", mutexErr)
+	}
+	if mutexExists {
+		releaseSingletonMutex(mutexHandle)
+		return fmt.Errorf("daemon: another instance is already running (singleton mutex %s is held)", singletonMutexName())
+	}
+	defer releaseSingletonMutex(mutexHandle)
+
+	// 2. GHOST CLEANUP: we hold the mutex, so anything still bound to the
+	// pipe is a ghost — an older build with no mutex awareness, or a
+	// daemon whose handle was lost. SHUTDOWN it so we can rebind. A
+	// living mutex-aware peer was already filtered out above; this can
+	// only kill ghosts.
 	pipePath := IPCPipePath()
 	conn, err := winio.DialPipe(pipePath, nil)
 	if err == nil {
-		log.Printf("daemon: existing daemon detected at %s, requesting shutdown to take over", pipePath)
+		log.Printf("daemon: ghost daemon detected at %s (no mutex), requesting shutdown", pipePath)
 		fmt.Fprintln(conn, "SHUTDOWN")
 		conn.Close()
 
 		// Wait for the pipe to be released (up to 3 seconds)
 		deadline := time.Now().Add(3 * time.Second)
 		for time.Now().Before(deadline) {
-			// Try to dial again; if it fails, it means the pipe is released
 			c, err := winio.DialPipe(pipePath, nil)
 			if err != nil {
-				// Pipe is gone or inaccessible — we can proceed to ListenPipe
 				break
 			}
 			c.Close()
