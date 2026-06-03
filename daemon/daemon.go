@@ -265,20 +265,23 @@ func (d *Daemon) listSessions() []sessionInfo {
 		status := "unknown"
 		uptime := ""
 		pid := 0
+		var lastChange time.Time
 		if w, ok := d.watchers[name]; ok {
 			status = w.Status()
 			p := w.Profile()
 			uptime = formatUptime(time.Since(p.CreatedAt))
 			pid = p.PID
+			lastChange = p.LastBufferChangeAt
 		}
 		result = append(result, sessionInfo{
-			Name:       name,
-			PID:        pid,
-			PipePath:   pipePath,
-			WsURL:      d.wsURLs[name],
-			AppRuntime: d.appRuntimes[name],
-			Status:     status,
-			Uptime:     uptime,
+			Name:               name,
+			PID:                pid,
+			PipePath:           pipePath,
+			WsURL:              d.wsURLs[name],
+			AppRuntime:         d.appRuntimes[name],
+			Status:             status,
+			Uptime:             uptime,
+			LastBufferChangeAt: lastChange,
 		})
 	}
 	return result

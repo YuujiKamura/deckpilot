@@ -1,5 +1,7 @@
 package daemon
 
+import "time"
+
 // This file gathers the daemon package's domain / value types in one place so
 // daemon.go and watcher.go can focus on lifecycle and orchestration.
 //
@@ -30,6 +32,10 @@ type sessionInfo struct {
 	AppRuntime string `json:"app_runtime"`
 	Status     string `json:"status"`
 	Uptime     string `json:"uptime"`
+	// LastBufferChangeAt is the wall-clock time the session's terminal buffer
+	// last changed. Zero value (encoded as "0001-01-01T00:00:00Z") means no
+	// output has been observed yet; clients render that as "-".
+	LastBufferChangeAt time.Time `json:"last_buffer_change_at"`
 }
 
 // BufferNotification is emitted when a watcher detects a change or stability.

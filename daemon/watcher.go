@@ -61,15 +61,20 @@ type Watcher struct {
 	deadAt      time.Time
 	deadRetries int
 	createdAt   time.Time
-	sendCount   int
-	showCount   int
-	pollSuccess int
-	pollFail    int
-	lastPollOK  time.Time
-	onNotify    func(BufferNotification)
-	reqCh       chan pipeRequest
-	pauseCh     chan chan struct{} // send pause signal, receive resume signal
-	client      pipeClient
+	// lastBufferChangeAt is the wall-clock time of the most recent buffer
+	// content change (a poll whose hash differs from the previous one). Zero
+	// until the first non-empty content is observed, so callers can render
+	// "never produced output yet" distinctly from "produced output just now".
+	lastBufferChangeAt time.Time
+	sendCount          int
+	showCount          int
+	pollSuccess        int
+	pollFail           int
+	lastPollOK         time.Time
+	onNotify           func(BufferNotification)
+	reqCh              chan pipeRequest
+	pauseCh            chan chan struct{} // send pause signal, receive resume signal
+	client             pipeClient
 }
 
 // NewWatcher creates a Watcher for the given session.
@@ -336,6 +341,12 @@ func (w *Watcher) updateContent(content string) {
 
 	w.lastContent = content
 	changed := hash != w.lastHash
+	// Stamp the change time on any genuine content change. Guard on non-empty
+	// content so a session that starts with an empty buffer is reported as
+	// "no output yet" (zero time) rather than "changed at startup".
+	if changed && content != "" {
+		w.lastBufferChangeAt = time.Now()
+	}
 	prevStatus := w.lastStatus
 
 	// Only update status if not already marked as stalled by poll()
@@ -351,7 +362,7 @@ func (w *Watcher) updateContent(content string) {
 			}
 		}
 	} else {
-		// Recovery: if we were stalled, but IsHung check in poll() didn't 
+		// Recovery: if we were stalled, but IsHung check in poll() didn't
 		// find a hang this time, we should recover.
 		if !IsHungAppWindow(w.hwnd) {
 			w.status = "active" // Recover to active on any update
@@ -498,15 +509,16 @@ func (w *Watcher) Client() *pipe.Client {
 
 // WatcherProfile holds session profiling counters.
 type WatcherProfile struct {
-	CreatedAt   time.Time
-	PID         int
-	SendCount   int
-	ShowCount   int
-	PollSuccess int
-	PollFail    int
-	LastPollOK  time.Time
-	DeadAt      time.Time
-	LastError   string
+	CreatedAt          time.Time
+	LastBufferChangeAt time.Time
+	PID                int
+	SendCount          int
+	ShowCount          int
+	PollSuccess        int
+	PollFail           int
+	LastPollOK         time.Time
+	DeadAt             time.Time
+	LastError          string
 }
 
 // Profile returns a snapshot of this watcher's profiling counters.
@@ -514,15 +526,16 @@ func (w *Watcher) Profile() WatcherProfile {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return WatcherProfile{
-		CreatedAt:   w.createdAt,
-		PID:         w.pid,
-		SendCount:   w.sendCount,
-		ShowCount:   w.showCount,
-		PollSuccess: w.pollSuccess,
-		PollFail:    w.pollFail,
-		LastPollOK:  w.lastPollOK,
-		DeadAt:      w.deadAt,
-		LastError:   w.lastError,
+		CreatedAt:          w.createdAt,
+		LastBufferChangeAt: w.lastBufferChangeAt,
+		PID:                w.pid,
+		SendCount:          w.sendCount,
+		ShowCount:          w.showCount,
+		PollSuccess:        w.pollSuccess,
+		PollFail:           w.pollFail,
+		LastPollOK:         w.lastPollOK,
+		DeadAt:             w.deadAt,
+		LastError:          w.lastError,
 	}
 }
 

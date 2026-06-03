@@ -18,6 +18,10 @@ type watchEntry struct {
 	Pending    string `json:"pending"`
 	LastChange string `json:"last_change"`
 	Tail       string `json:"tail"`
+	// LastBufferChangeAt is the daemon-reported wall-clock time the session's
+	// buffer last changed (RFC3339; zero = no output yet). Distinct from
+	// LastChange, which is the local time this snapshot was taken.
+	LastBufferChangeAt time.Time `json:"last_buffer_change_at"`
 }
 
 // Watch monitors one or all sessions and displays a live dashboard.
@@ -68,8 +72,9 @@ func Watch(args []string) {
 		}
 
 		type listEntry struct {
-			Name   string `json:"name"`
-			Status string `json:"status"`
+			Name               string    `json:"name"`
+			Status             string    `json:"status"`
+			LastBufferChangeAt time.Time `json:"last_buffer_change_at"`
 		}
 		var sessions []listEntry
 		if err := json.Unmarshal([]byte(raw), &sessions); err != nil {
@@ -109,11 +114,12 @@ func Watch(args []string) {
 			}
 
 			entries = append(entries, watchEntry{
-				Name:       s.Name,
-				Status:     s.Status,
-				Pending:    pending,
-				LastChange: time.Now().Format("15:04:05"),
-				Tail:       tail,
+				Name:               s.Name,
+				Status:             s.Status,
+				Pending:            pending,
+				LastChange:         time.Now().Format("15:04:05"),
+				Tail:               tail,
+				LastBufferChangeAt: s.LastBufferChangeAt,
 			})
 		}
 
