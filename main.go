@@ -66,6 +66,8 @@ func main() {
 		cmd.WaitIdle(os.Args[2:])
 	case "cleanup":
 		cmd.Cleanup(os.Args[2:])
+	case "conduct":
+		cmd.Conduct(os.Args[2:])
 	case "shutdown":
 		cmd.Shutdown()
 	case "version":
@@ -90,12 +92,14 @@ Commands:
                    [--poll=D]
   cleanup          [--days N] [--dry-run]         Remove hang dumps older than N days (default 3)
                    [--worktrees]                  + GC dead launch-meta; --worktrees also sweeps orphan worktrees
+  conduct          --file PATH [--agent NAME]     Watch a markdown checklist file and auto-launch
+                   [--interval 30s] [--one-shot]  agents for each unchecked - [ ] line
   shutdown                                        Stop the daemon process
 
 Run 'deckpilot help' for this message.
 `)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\n\nAvailable commands: send, show, list, ls, launch, watch, hang-detect, auto-approvals, approve, notify, wait-idle, cleanup, shutdown\nRun 'deckpilot help' for usage.\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n\nAvailable commands: send, show, list, ls, launch, watch, hang-detect, auto-approvals, approve, notify, wait-idle, cleanup, conduct, shutdown\nRun 'deckpilot help' for usage.\n", os.Args[1])
 		os.Exit(1)
 	}
 }
