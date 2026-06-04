@@ -136,8 +136,12 @@ func Launch(args []string) {
 		os.Exit(1)
 	}
 	// Once started, completely detach. Do not Wait(), do not keep handles.
-	// The daemon will pick up the session via file scanning.
+	// The daemon will pick up the session via file scanning. Keep the PID
+	// first so any later launch failure can kill this window instead of
+	// leaking it (every os.Exit below this point calls killGhosttyOnLeak).
+	var ghosttyPID int
 	if cmd.Process != nil {
+		ghosttyPID = cmd.Process.Pid
 		cmd.Process.Release()
 	}
 	fmt.Fprintf(os.Stderr, "launched: %s\n", ghosttyExe)
@@ -145,7 +149,8 @@ func Launch(args []string) {
 	// Wait for new session to appear
 	sessionName, err := waitForNewSession(knownSessions, 15*time.Second)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "session detect: %v\n", err)
+		fmt.Fprintf(os.Stderr, "session detect: %v (killing leaked Ghostty PID=%d)\n", err, ghosttyPID)
+		killGhosttyOnLeak(ghosttyPID)
 		os.Exit(1)
 	}
 	fmt.Fprintf(os.Stderr, "session: %s\n", sessionName)
@@ -174,9 +179,10 @@ func Launch(args []string) {
 		agent.Cmd,
 		quoteShellArgs(agent.Args))
 	caller := strconv.Itoa(os.Getppid())
-	_, err = daemon.DaemonSend(sessionName, launchCmd, caller)
+	_, err = daemonSendWithRetry(sessionName, launchCmd, caller, 3, 2*time.Second)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "send launch cmd: %v\n", err)
+		fmt.Fprintf(os.Stderr, "send launch cmd: %v (killing leaked Ghostty PID=%d)\n", err, ghosttyPID)
+		killGhosttyOnLeak(ghosttyPID)
 		os.Exit(1)
 	}
 	fmt.Fprintf(os.Stderr, "sent launch: %s %s\n", agent.Cmd, strings.Join(agent.Args, " "))
@@ -184,15 +190,17 @@ func Launch(args []string) {
 	// Wait for trust or ready
 	err = waitForReady(sessionName, agent, 30*time.Second)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "ready wait: %v\n", err)
+		fmt.Fprintf(os.Stderr, "ready wait: %v (killing leaked Ghostty PID=%d)\n", err, ghosttyPID)
+		killGhosttyOnLeak(ghosttyPID)
 		os.Exit(1)
 	}
 	fmt.Fprintf(os.Stderr, "ready: %s\n", agentName)
 
 	// Send prompt
-	result, err := daemon.DaemonSend(sessionName, prompt, caller)
+	result, err := daemonSendWithRetry(sessionName, prompt, caller, 3, 2*time.Second)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "send: %v\n", err)
+		fmt.Fprintf(os.Stderr, "send: %v (killing leaked Ghostty PID=%d)\n", err, ghosttyPID)
+		killGhosttyOnLeak(ghosttyPID)
 		os.Exit(1)
 	}
 	fmt.Fprintf(os.Stderr, "sent: %s\n", result)
