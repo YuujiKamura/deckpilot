@@ -422,6 +422,17 @@ Always a JSON object with `cmd`, `ok` (bool), and a payload.
 { "cmd": "INPUT", "ok": false, "error": "session not found: foo" }
 ```
 
+## Changelog
+
+See [CHANGELOG.md](./CHANGELOG.md) for the full history of changes.
+
+Recent highlights (2026-06-04):
+
+- Daemon singleton + self-watchdog — defense-in-depth hang recovery (named `Global\` mutex blocks ghost siblings; an in-process watchdog exits a hung daemon so the next invocation respawns it).
+- `cleanup --worktrees` — opt-in orphan worktree sweep under `~/.deckpilot/worktrees/` (daemon-gated, conservative no-op when the daemon is down).
+- Launch retry with auto-kill — `deckpilot launch` no longer leaks Ghostty windows on `submit_failed_stuck`; failed exit paths kill the leaked PID so caller retries stay idempotent.
+- `conduct` — watch a markdown checklist and dispatch a `deckpilot launch` per unchecked `- [ ]` line for markdown-driven agent dispatch.
+
 ## License
 
 MIT
