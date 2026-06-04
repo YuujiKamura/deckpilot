@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -43,6 +44,8 @@ type Daemon struct {
 	lastUsed    map[string]string        // caller -> session name
 	idleHooks   []IdleHook               // hooks to execute on idle transition
 	WSPort      int                      // WebSocket control port (default 8080)
+
+	lastDiscoveryTick int64 // unix nano; atomic load/store only. discoveryLoop liveness indicator read by selfWatchdog.
 }
 
 // New creates a new Daemon instance. Idle hooks persisted under
@@ -132,7 +135,20 @@ func (d *Daemon) Run() error {
 	// 3. Start background discovery and refresh loop.
 	// Using a channel to feed discovered sessions avoids blocking startup.
 	discoveryCh := make(chan []pipe.Session, 1)
+	// Seed the liveness tick from startup so selfWatchdog has an implicit
+	// grace period of watchdogTimeout: the daemon is not judged hung until
+	// that long has elapsed without discovery progressing.
+	d.markDiscoveryTick()
 	go d.discoveryLoop(discoveryCh)
+
+	// Internal self-watchdog: if discovery stops progressing for
+	// watchdogTimeout, exit so the next `deckpilot` invocation can spawn a
+	// fresh daemon (a hung daemon would otherwise hold the singleton mutex
+	// and pipe and block respawn). The stop channel is never closed in
+	// production — the daemon only ends via os.Exit — so this is a single
+	// long-lived goroutine, not a leak.
+	watchdogStop := make(chan struct{})
+	go d.selfWatchdog(watchdogInterval, watchdogTimeout, os.Exit, watchdogStop)
 
 	go func() {
 		for sessions := range discoveryCh {
@@ -186,6 +202,11 @@ func (d *Daemon) discoveryLoop(ch chan []pipe.Session) {
 	defer ticker.Stop()
 
 	for range ticker.C {
+		// Record that the loop entered another iteration before doing any
+		// work, so selfWatchdog's liveness signal is independent of how long
+		// refreshSessions/Discover take this round.
+		d.markDiscoveryTick()
+
 		// Perform liveness checks and pruning
 		d.refreshSessions()
 
@@ -194,6 +215,13 @@ func (d *Daemon) discoveryLoop(ch chan []pipe.Session) {
 			ch <- sessions
 		}
 	}
+}
+
+// markDiscoveryTick records that discoveryLoop just entered another iteration.
+// selfWatchdog reads this (via lastDiscoveryTick) to decide whether the daemon
+// is wedged. Atomic store keeps it race-free against the watchdog's load.
+func (d *Daemon) markDiscoveryTick() {
+	atomic.StoreInt64(&d.lastDiscoveryTick, time.Now().UnixNano())
 }
 
 // addSession registers a session and starts a watcher goroutine.
