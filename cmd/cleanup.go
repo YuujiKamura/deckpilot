@@ -360,12 +360,42 @@ func removeManagedWorktree(path string) error {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return nil
 	}
-	cmd := exec.Command("git", "-C", path, "worktree", "remove", "--force", path)
-	cmd.Dir = managedWorktreesDir()
-	if out, err := cmd.CombinedOutput(); err != nil {
-		if rmErr := os.RemoveAll(path); rmErr != nil {
-			return fmt.Errorf("git worktree remove: %w: %s; fallback remove: %w", err, strings.TrimSpace(string(out)), rmErr)
-		}
+	// Non-force removal is deliberate. `git worktree remove` (without
+	// --force) refuses a worktree that is dirty (uncommitted or
+	// untracked files) or locked. That refusal is the physical-layer
+	// guard preventing this opt-in sweep from destroying a live worker's
+	// in-progress work — the 2026-06-04 incident, where a registered
+	// deckpilot-claude-* worktree carrying uncommitted output was
+	// force-deleted because its session had no resolvable launch-meta and
+	// the keep-set therefore mis-classified it as an orphan. We never
+	// pass --force, and we never os.RemoveAll a path git still tracks as
+	// a worktree.
+	cmd := exec.Command("git", "-C", path, "worktree", "remove", path)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	// git declined. If the path is still a registered worktree, the
+	// refusal means it is dirty or locked — it has work to lose or a live
+	// holder — so we honor git's judgment and preserve it.
+	if isRegisteredWorktree(path) {
+		return fmt.Errorf("refusing to remove worktree with uncommitted or locked state (preserving work) %s: %s",
+			path, strings.TrimSpace(string(out)))
+	}
+	// Not a registered worktree: a dangling leftover directory with no
+	// git-tracked state to lose. Safe to remove outright.
+	if rmErr := os.RemoveAll(path); rmErr != nil {
+		return fmt.Errorf("remove dangling worktree dir %s: %w", path, rmErr)
 	}
 	return nil
+}
+
+// isRegisteredWorktree reports whether path is a live git worktree. A
+// registered worktree is itself a valid git location, so probing it with
+// rev-parse succeeds; a dangling leftover directory is not inside any
+// repository and the probe fails. This is how removeManagedWorktree
+// tells "dirty/locked worktree git refused to delete (preserve)" apart
+// from "non-git leftover dir (safe to RemoveAll)".
+func isRegisteredWorktree(path string) bool {
+	return exec.Command("git", "-C", path, "rev-parse", "--is-inside-work-tree").Run() == nil
 }
