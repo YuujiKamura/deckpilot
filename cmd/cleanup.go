@@ -48,6 +48,7 @@ var cleanupListSessions = daemon.DaemonList
 func Cleanup(args []string) {
 	maxAge := 3 * 24 * time.Hour
 	dryRun := false
+	worktrees := false
 
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--days" && i+1 < len(args) {
@@ -57,6 +58,8 @@ func Cleanup(args []string) {
 			i++
 		} else if args[i] == "--dry-run" {
 			dryRun = true
+		} else if args[i] == "--worktrees" {
+			worktrees = true
 		}
 	}
 
@@ -87,6 +90,113 @@ func Cleanup(args []string) {
 	default:
 		fmt.Printf("Cleaned up %d dead launch-meta entries from %s\n", removed, lmDir)
 	}
+
+	// 3. Orphan worktree sweep (opt-in: --worktrees). The launch-meta
+	// sweep above already removes a worktree when its session's
+	// launch-meta is still present but the session is dead. It cannot
+	// see worktrees whose launch-meta was itself already GC'd by a
+	// prior liveness sweep — those accumulate as orphan directories
+	// (41 observed 2026-06-04). This pass reconciles the physical
+	// ~/.deckpilot/worktrees/ tree against the live session set and is
+	// opt-in because it is the only path that can touch a directory
+	// with no on-disk metadata trail.
+	if worktrees {
+		wtRoot := managedWorktreesDir()
+		wtRemoved, wtMissing, wtAbort := sweepOrphanWorktrees(dryRun)
+		switch {
+		case wtMissing:
+			fmt.Printf("No worktrees directory at %s. Nothing to clean.\n", wtRoot)
+		case wtAbort:
+			fmt.Printf("Skipped orphan-worktree sweep at %s: could not query daemon for live sessions (conservative no-op).\n", wtRoot)
+		case dryRun:
+			// sweepOrphanWorktrees already printed per-dir lines.
+		default:
+			fmt.Printf("Removed %d orphan worktree(s) from %s\n", wtRemoved, wtRoot)
+		}
+	}
+}
+
+// sweepOrphanWorktrees removes managed worktree directories under
+// ~/.deckpilot/worktrees/ that no live session depends on.
+//
+// "Orphan" = a top-level directory whose path is not the worktree root
+// of any session the daemon currently reports as live. This is the
+// residual class the launch-meta sweep cannot reach: once a session's
+// launch-meta has been GC'd, the per-file removal in
+// sweepLaunchMetaByLiveness no longer has a record pointing at the
+// worktree, so the directory lingers.
+//
+// Like the launch-meta sweep this is daemon-gated: if the live-session
+// list cannot be fetched, `abort` is set and nothing is removed. We
+// must not guess — without the live set we cannot tell an orphan from
+// a worktree a running worker is still cwd'd into. `missing` means the
+// worktrees directory does not exist yet (clean install).
+func sweepOrphanWorktrees(dryRun bool) (removed int, missing bool, abort bool) {
+	root := managedWorktreesDir()
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, true, false
+		}
+		fmt.Fprintf(os.Stderr, "cleanup: read %s: %v\n", root, err)
+		return 0, false, false
+	}
+
+	keep, ok := liveWorktreeRoots()
+	if !ok {
+		return 0, false, true
+	}
+
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		path := filepath.Join(root, e.Name())
+		if _, kept := keep[path]; kept {
+			continue
+		}
+		if dryRun {
+			fmt.Printf("[dry-run] would remove orphan worktree: %s\n", path)
+			continue
+		}
+		if err := removeManagedWorktree(path); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to remove orphan worktree %s: %v\n", path, err)
+			continue
+		}
+		fmt.Printf("removed orphan worktree: %s\n", path)
+		removed++
+	}
+	return removed, false, false
+}
+
+// liveWorktreeRoots returns the set of managed worktree root paths in
+// use by a currently-live session, derived from each live session's
+// launch-meta cwd. ok=false means the daemon liveness query failed and
+// the caller must treat every directory as potentially in use.
+func liveWorktreeRoots() (map[string]struct{}, bool) {
+	raw, err := cleanupListSessions()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cleanup: orphan-worktree liveness query failed: %v\n", err)
+		return nil, false
+	}
+	var sessions []struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal([]byte(raw), &sessions); err != nil {
+		fmt.Fprintf(os.Stderr, "cleanup: orphan-worktree liveness query bad json: %v\n", err)
+		return nil, false
+	}
+	keep := make(map[string]struct{}, len(sessions))
+	for _, s := range sessions {
+		meta, ok := readLaunchMetaFile(launchMetaPath(s.Name))
+		if !ok {
+			continue
+		}
+		if rootPath, ok := managedWorktreeRootForPath(meta.Cwd); ok {
+			keep[rootPath] = struct{}{}
+		}
+	}
+	return keep, true
 }
 
 // sweepDir deletes files in dir whose mtime is older than maxAge from

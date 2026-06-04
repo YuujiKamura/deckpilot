@@ -89,6 +89,7 @@ Commands:
   wait-idle        <session> [--timeout=D]        Block until session becomes idle (for bg-task push notify)
                    [--poll=D]
   cleanup          [--days N] [--dry-run]         Remove hang dumps older than N days (default 3)
+                   [--worktrees]                  + GC dead launch-meta; --worktrees also sweeps orphan worktrees
   shutdown                                        Stop the daemon process
 
 Run 'deckpilot help' for this message.

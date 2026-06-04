@@ -221,6 +221,137 @@ func TestCleanup_MissingDirIsNoError(t *testing.T) {
 	Cleanup(nil)
 }
 
+// TestCleanup_DeadSessionWorktreeRemoved pins the launch-meta-driven
+// worktree removal that already shipped in commit 6690884 but had no
+// direct coverage: a dead session whose launch-meta cwd points inside
+// ~/.deckpilot/worktrees/ must have its worktree directory removed
+// alongside the meta file.
+func TestCleanup_DeadSessionWorktreeRemoved(t *testing.T) {
+	tempHome := t.TempDir()
+	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+	// Daemon reports no live sessions -> the launch-meta is dead.
+	withCleanupSeams(t, tempHome, now, func() (string, error) { return "[]", nil })
+
+	wtRoot := managedWorktreesDir()
+	deadWt := filepath.Join(wtRoot, "repo-claude-111")
+	if err := os.MkdirAll(filepath.Join(deadWt, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteLaunchMeta(LaunchMeta{
+		SessionName: "ghostty-DEAD",
+		Agent:       "claude",
+		Cwd:         filepath.Join(deadWt, "sub"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	Cleanup(nil)
+
+	if _, err := os.Stat(deadWt); !os.IsNotExist(err) {
+		t.Errorf("dead session's worktree must be removed, err=%v", err)
+	}
+	if _, err := os.Stat(launchMetaPath("ghostty-DEAD")); !os.IsNotExist(err) {
+		t.Errorf("dead session's launch-meta must be removed, err=%v", err)
+	}
+}
+
+// TestCleanup_OrphanWorktreeSweptWithFlag pins the new opt-in sweep:
+// with --worktrees, a worktree directory backed by no live session is
+// removed, while a live session's worktree directory survives.
+func TestCleanup_OrphanWorktreeSweptWithFlag(t *testing.T) {
+	tempHome := t.TempDir()
+	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+	withCleanupSeams(t, tempHome, now, func() (string, error) {
+		return `[{"name":"ghostty-LIVE","pid":1,"app_runtime":"win32","status":"idle","uptime":"1m"}]`, nil
+	})
+
+	wtRoot := managedWorktreesDir()
+	liveWt := filepath.Join(wtRoot, "repo-claude-live")
+	orphanWt := filepath.Join(wtRoot, "repo-claude-orphan")
+	for _, d := range []string{liveWt, orphanWt} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := WriteLaunchMeta(LaunchMeta{
+		SessionName: "ghostty-LIVE",
+		Agent:       "claude",
+		Cwd:         liveWt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	Cleanup([]string{"--worktrees"})
+
+	if _, err := os.Stat(liveWt); err != nil {
+		t.Errorf("live session's worktree must survive: %v", err)
+	}
+	if _, err := os.Stat(orphanWt); !os.IsNotExist(err) {
+		t.Errorf("orphan worktree must be removed, err=%v", err)
+	}
+}
+
+// TestCleanup_OrphanWorktreeNotSweptWithoutFlag pins that the orphan
+// sweep is strictly opt-in: a plain `deckpilot cleanup` must never
+// touch a worktree that has no launch-meta record.
+func TestCleanup_OrphanWorktreeNotSweptWithoutFlag(t *testing.T) {
+	tempHome := t.TempDir()
+	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+	withCleanupSeams(t, tempHome, now, func() (string, error) { return "[]", nil })
+
+	orphan := filepath.Join(managedWorktreesDir(), "repo-claude-orphan")
+	if err := os.MkdirAll(orphan, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	Cleanup(nil)
+
+	if _, err := os.Stat(orphan); err != nil {
+		t.Errorf("orphan worktree must survive without --worktrees: %v", err)
+	}
+}
+
+// TestCleanup_OrphanWorktreeDryRunKeepsAll pins that --dry-run leaves
+// orphan worktrees on disk even when --worktrees is set.
+func TestCleanup_OrphanWorktreeDryRunKeepsAll(t *testing.T) {
+	tempHome := t.TempDir()
+	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+	withCleanupSeams(t, tempHome, now, func() (string, error) { return "[]", nil })
+
+	orphan := filepath.Join(managedWorktreesDir(), "repo-claude-orphan")
+	if err := os.MkdirAll(orphan, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	Cleanup([]string{"--worktrees", "--dry-run"})
+
+	if _, err := os.Stat(orphan); err != nil {
+		t.Errorf("--dry-run must not remove orphan worktree: %v", err)
+	}
+}
+
+// TestCleanup_OrphanWorktreeDaemonDownIsNoOp pins the conservative
+// guard: if liveness cannot be determined, the sweep removes nothing —
+// every directory might belong to a running worker.
+func TestCleanup_OrphanWorktreeDaemonDownIsNoOp(t *testing.T) {
+	tempHome := t.TempDir()
+	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+	withCleanupSeams(t, tempHome, now, func() (string, error) {
+		return "", fmt.Errorf("daemon: connection refused")
+	})
+
+	orphan := filepath.Join(managedWorktreesDir(), "repo-claude-orphan")
+	if err := os.MkdirAll(orphan, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	Cleanup([]string{"--worktrees"})
+
+	if _, err := os.Stat(orphan); err != nil {
+		t.Errorf("daemon-down must not remove orphan worktree: %v", err)
+	}
+}
+
 func TestManagedWorktreeRootForPath(t *testing.T) {
 	tempHome := t.TempDir()
 	withCleanupSeams(t, tempHome, time.Now(), func() (string, error) { return "[]", nil })
