@@ -357,9 +357,14 @@ func waitForReady(session string, agent AgentDef, timeout time.Duration) error {
 			continue
 		}
 
-		// Handle trust confirmation
-		if !trustHandled && strings.Contains(output, agent.TrustStr) {
-			// Send Enter to accept trust
+		// Handle trust confirmation. Detect fuzzily by the dialog's stable
+		// structure (topic "trust" + a confirm affordance), NOT an exact
+		// phrase — claude changed "trust the contents" → "trust this folder"
+		// once already (2026-06-04) and an exact match silently stopped
+		// firing, sending the prompt into the unanswered menu. TrustStr
+		// non-empty just opts the agent into the check.
+		if !trustHandled && looksLikeTrustDialog(output) {
+			// Send Enter to accept trust (default option is "Yes, I trust").
 			daemon.DaemonSend(session, "", caller)
 			trustHandled = true
 			time.Sleep(2 * time.Second)
@@ -377,4 +382,34 @@ func waitForReady(session string, agent AgentDef, timeout time.Duration) error {
 	}
 
 	return fmt.Errorf("agent did not become ready within %v", timeout)
+}
+
+// looksLikeTrustDialog fuzzily detects a folder-trust / workspace-trust
+// confirmation prompt in a TUI buffer, tolerant of wording changes across
+// agent versions. It requires two co-signals so normal output mentioning
+// "trust" in passing does not trip it:
+//
+//  1. the topic — the word "trust" (case-insensitive), and
+//  2. a confirmation affordance — the prompt is asking to confirm/cancel.
+//
+// Both claude ("Quick safety check ... Yes, I trust this folder ... Enter to
+// confirm · Esc to cancel") and codex ("Do you trust the authors ... (trust)")
+// satisfy this without hardcoding either exact phrase.
+func looksLikeTrustDialog(buf string) bool {
+	lo := strings.ToLower(buf)
+	if !strings.Contains(lo, "trust") {
+		return false
+	}
+	for _, affordance := range []string{
+		"confirm",        // "Enter to confirm"
+		"esc to cancel",  // claude trust menu footer
+		"yes, i trust",   // claude option 1
+		"do you trust",   // codex / generic phrasing
+		"(y/n)", "[y/n]", // terse yes/no prompts
+	} {
+		if strings.Contains(lo, affordance) {
+			return true
+		}
+	}
+	return false
 }

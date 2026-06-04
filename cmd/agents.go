@@ -22,10 +22,15 @@ var agents = map[string]AgentDef{
 		ErrorStr:    "",
 	},
 	"claude": {
-		Cmd:         "claude",
-		Args:        claudeDefaultArgs(),
-		ReadyStr:    ">",
-		TrustStr:    "",
+		Cmd:      "claude",
+		Args:     claudeDefaultArgs(),
+		ReadyStr: ">",
+		// claude は初回フォルダ起動で信頼ダイアログを出す
+		// (--dangerously-skip-permissions では消えない別ゲート)。非空 =
+		// 「信頼ダイアログを出し得る」オプトイン印。実際の照合は文言に依存
+		// しない looksLikeTrustDialog (fuzzy) が行う ── 値そのものは
+		// サンプル文言の記録用 (2026-06-04: 文言変更で exact 一致が死んだ反省)。
+		TrustStr:    "trust this folder",
 		SubmitKey:   "\r",
 		ThinkingStr: "Gesticulating", // 実測: "✶ Gesticulating…" を観測済み
 		ErrorStr:    "",
@@ -34,7 +39,7 @@ var agents = map[string]AgentDef{
 		Cmd:         "claude",
 		Args:        append(claudeDefaultArgs(), "--model", "sonnet"),
 		ReadyStr:    ">",
-		TrustStr:    "",
+		TrustStr:    "trust this folder", // claude 系、同じ信頼ダイアログを共有
 		SubmitKey:   "\r",
 		ThinkingStr: "Gesticulating", // claude 系、同じ TUI を共有
 		ErrorStr:    "",
@@ -43,7 +48,7 @@ var agents = map[string]AgentDef{
 		Cmd:         "claude",
 		Args:        append(claudeDefaultArgs(), "--model", "haiku"),
 		ReadyStr:    ">",
-		TrustStr:    "",
+		TrustStr:    "trust this folder", // claude 系、同じ信頼ダイアログを共有
 		SubmitKey:   "\r",
 		ThinkingStr: "Gesticulating", // claude 系、同じ TUI を共有
 		ErrorStr:    "",
