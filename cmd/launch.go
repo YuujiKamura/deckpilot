@@ -346,7 +346,6 @@ func waitForNewSession(known []string, timeout time.Duration) (string, error) {
 
 func waitForReady(session string, agent AgentDef, timeout time.Duration) error {
 	caller := strconv.Itoa(os.Getppid())
-	trustHandled := agent.TrustStr == ""
 	deadline := time.Now().Add(timeout)
 
 	for time.Now().Before(deadline) {
@@ -363,10 +362,13 @@ func waitForReady(session string, agent AgentDef, timeout time.Duration) error {
 		// once already (2026-06-04) and an exact match silently stopped
 		// firing, sending the prompt into the unanswered menu. TrustStr
 		// non-empty just opts the agent into the check.
-		if !trustHandled && looksLikeTrustDialog(output) {
-			// Send Enter to accept trust (default option is "Yes, I trust").
+		if looksLikeTrustDialog(output) {
+			// Send Enter to accept trust ("Yes, I trust" is the default).
+			// Do NOT gate readiness on having seen a dialog: most folders are
+			// already trusted and never show one — gating hung the launch
+			// forever waiting for a dialog that never came (2026-06-04
+			// regression: claude was ready, launch killed it at the timeout).
 			daemon.DaemonSend(session, "", caller)
-			trustHandled = true
 			time.Sleep(2 * time.Second)
 			continue
 		}
@@ -376,7 +378,7 @@ func waitForReady(session string, agent AgentDef, timeout time.Duration) error {
 		// TUI agents (Claude Code, etc.) keep updating the terminal (cursor
 		// blink, status bar) which prevents the watcher from ever settling
 		// to "idle" reliably within the timeout window.
-		if trustHandled && strings.Contains(output, agent.ReadyStr) {
+		if strings.Contains(output, agent.ReadyStr) {
 			return nil
 		}
 	}

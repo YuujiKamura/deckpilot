@@ -22,9 +22,11 @@ var agents = map[string]AgentDef{
 		ErrorStr:    "",
 	},
 	"claude": {
-		Cmd:      "claude",
-		Args:     claudeDefaultArgs(),
-		ReadyStr: ">",
+		Cmd:  "claude",
+		Args: claudeDefaultArgs(),
+		// claude TUI のフッタ。素の ">" は cmd プロンプト "C:\...>" を誤マッチして
+		// TUI 起動前に ready 誤判定する (2026-06-04 実測)。TUI 固有の文字列にする。
+		ReadyStr: "bypass permissions",
 		// claude は初回フォルダ起動で信頼ダイアログを出す
 		// (--dangerously-skip-permissions では消えない別ゲート)。非空 =
 		// 「信頼ダイアログを出し得る」オプトイン印。実際の照合は文言に依存
@@ -38,7 +40,7 @@ var agents = map[string]AgentDef{
 	"sonnet": {
 		Cmd:         "claude",
 		Args:        append(claudeDefaultArgs(), "--model", "sonnet"),
-		ReadyStr:    ">",
+		ReadyStr:    "bypass permissions",
 		TrustStr:    "trust this folder", // claude 系、同じ信頼ダイアログを共有
 		SubmitKey:   "\r",
 		ThinkingStr: "Gesticulating", // claude 系、同じ TUI を共有
@@ -47,7 +49,7 @@ var agents = map[string]AgentDef{
 	"haiku": {
 		Cmd:         "claude",
 		Args:        append(claudeDefaultArgs(), "--model", "haiku"),
-		ReadyStr:    ">",
+		ReadyStr:    "bypass permissions",
 		TrustStr:    "trust this folder", // claude 系、同じ信頼ダイアログを共有
 		SubmitKey:   "\r",
 		ThinkingStr: "Gesticulating", // claude 系、同じ TUI を共有
