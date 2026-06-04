@@ -2,6 +2,15 @@ package daemon
 
 import "strings"
 
+// stalledSpinnerPolls is how many consecutive unchanged-buffer polls (at the
+// watcher's 500ms cadence) a frozen-but-spinner-present screen must persist
+// before the watcher calls it "stalled" rather than "still working". 20 polls
+// ≈ 10s: long enough that a spinner merely skipping a repaint frame is not
+// mistaken for a stall, short enough to surface a real silent stop quickly.
+// A finished worker (no spinner) is called "idle" far sooner — see
+// updateContent.
+const stalledSpinnerPolls = 20
+
 // LooksActivelyThinking reports whether a TUI buffer shows an agent that is
 // still mid-task, as opposed to one parked at its ready prompt.
 //

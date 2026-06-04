@@ -346,16 +346,41 @@ func (w *Watcher) updateContent(content string) {
 			w.status = "active"
 		} else {
 			w.stableCount++
-			if w.stableCount >= 3 {
+			// A frozen buffer is "idle" (finished, parked at the prompt)
+			// UNLESS the agent's progress spinner is still on screen — a
+			// spinner that stopped repainting means the worker stalled
+			// mid-task. That stall is NOT an OS hang (the process still
+			// pumps window messages), so the IsHungAppWindow path in poll()
+			// never catches it; without this branch the silent stop is
+			// indistinguishable from "done". Require a longer freeze before
+			// crying stall so a spinner that skipped one repaint frame is
+			// not flagged; a finished worker (no spinner) goes idle sooner.
+			if LooksActivelyThinking(content) {
+				if w.stableCount >= stalledSpinnerPolls {
+					w.status = "stalled"
+				}
+				// else: spinner still on screen, presumed working — leave
+				// status as the "active" set on the last changed poll.
+			} else if w.stableCount >= 3 {
 				w.status = "idle"
 			}
 		}
 	} else {
-		// Recovery: if we were stalled, but IsHung check in poll() didn't 
-		// find a hang this time, we should recover.
-		if !IsHungAppWindow(w.hwnd) {
-			w.status = "active" // Recover to active on any update
+		// status == "stalled", set either by poll()'s OS-hung fast path or
+		// by the frozen-spinner branch above. Recover only on real progress.
+		// A silent stall keeps answering window messages while producing no
+		// new output, so "this poll wasn't OS-hung" must NOT clear it — only
+		// the buffer actually changing proves the worker resumed.
+		if changed {
+			w.lastHash = hash
+			w.stableCount = 0
+			w.status = "active"
+		} else if !IsHungAppWindow(w.hwnd) && !LooksActivelyThinking(content) {
+			// No OS hang and no spinner on screen: the worker is back at its
+			// prompt (stall cleared, nothing running) — treat as idle.
+			w.status = "idle"
 		}
+		// else: still stalled (OS still hung, or spinner still frozen).
 	}
 
 	// Check for status transition
