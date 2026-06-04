@@ -53,12 +53,12 @@ type HangInfo struct {
 // IncludeChildren (default true) and the clock/sampler overrides
 // (production code uses the real ones).
 type HangConfig struct {
-	SessionName  string
-	RootPID      uint32
-	Lister       ProcessLister
-	Sampler      CPUSampler
-	LastActOf    func() time.Time // returns last-act timestamp for the session
-	Action       HangAction
+	SessionName string
+	RootPID     uint32
+	Lister      ProcessLister
+	Sampler     CPUSampler
+	LastActOf   func() time.Time // returns last-act timestamp for the session
+	Action      HangAction
 
 	// WatcherStatusOf is the OS-authoritative fast path (issue #26
 	// pivot). If non-nil, probeOnce calls it and fires Action
@@ -71,6 +71,17 @@ type HangConfig struct {
 	// exercise the heuristic branch explicitly, web sessions without
 	// a window handle, etc.).
 	WatcherStatusOf func() string
+
+	// IsWorkingOf gates the CPU+stall heuristic so it fires only when the
+	// agent is still mid-task. A finished worker parked at its ready prompt
+	// is also low-CPU with a frozen buffer, so the bare heuristic cannot
+	// tell "stalled mid-task" from "done waiting" — both look idle+frozen.
+	// When non-nil and it returns false (agent is at its prompt, not
+	// thinking), the heuristic is suppressed: that's "done", not a hang.
+	// Typically wired to read the session buffer and call
+	// LooksActivelyThinking. Leave nil to keep the legacy behavior (any
+	// idle+frozen session is a hang). The os-hung fast path is never gated.
+	IsWorkingOf func() bool
 
 	CPUThreshold   float64       // e.g. 1.0 (percent, aggregate)
 	StallSeconds   time.Duration // e.g. 60 * time.Second
@@ -127,7 +138,7 @@ func (c *HangConfig) Validate() error {
 // HangDetector runs a probe loop until ctx is cancelled. One detector
 // per watched session. Start with Run; safe to stop by cancelling ctx.
 type HangDetector struct {
-	cfg         HangConfig
+	cfg          HangConfig
 	lastDispatch time.Time
 }
 
@@ -263,6 +274,15 @@ func (d *HangDetector) probeOnce(ctx context.Context) error {
 	idle := percent < d.cfg.CPUThreshold
 	stalled := stall >= d.cfg.StallSeconds
 	if !(idle && stalled) {
+		return nil
+	}
+
+	// 4b. Mid-task gate. idle+stalled describes a frozen, low-CPU buffer —
+	// which is BOTH "stalled mid-task" and "finished, parked at the ready
+	// prompt". Only the former is a hang. If the caller wired IsWorkingOf,
+	// suppress the alert when the agent is not actively thinking (its
+	// spinner is gone and it's back at "❯ "). nil hook = legacy behavior.
+	if d.cfg.IsWorkingOf != nil && !d.cfg.IsWorkingOf() {
 		return nil
 	}
 

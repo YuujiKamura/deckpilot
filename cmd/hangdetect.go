@@ -154,16 +154,29 @@ func HangDetect(args []string) {
 	}
 
 	cfg := daemon.HangConfig{
-		SessionName:     sessionName,
-		RootPID:         rootPID,
-		Lister:          daemon.SystemProcessLister{},
-		Sampler:         daemon.SystemCPUSampler{},
-		LastActOf:       func() time.Time { return fetchLastAct(sessionName) },
+		SessionName: sessionName,
+		RootPID:     rootPID,
+		Lister:      daemon.SystemProcessLister{},
+		Sampler:     daemon.SystemCPUSampler{},
+		LastActOf:   func() time.Time { return fetchLastAct(sessionName) },
 		// Watcher already polls IsHungAppWindow and surfaces the
 		// result as session status "stalled" via DaemonList. Plumb
 		// that through so probeOnce can use the OS-authoritative
 		// signal instead of guessing from CPU + last-act.
 		WatcherStatusOf: func() string { return fetchSessionStatus(sessionName) },
+		// Gate the CPU+stall heuristic on "is the agent still thinking?" so
+		// a worker that finished and parked at its ready prompt (also
+		// low-CPU + frozen) is not mis-reported as a hang. Read the buffer
+		// and look for the active spinner. On read failure, return true
+		// (assume working) so a transient error never silently drops a real
+		// stall — we'd rather over-alert than miss "the worker stopped".
+		IsWorkingOf: func() bool {
+			out, _, err := daemon.DaemonShow(sessionName, "buffer", "hangdetect")
+			if err != nil {
+				return true
+			}
+			return daemon.LooksActivelyThinking(out)
+		},
 		Action:          action,
 		CPUThreshold:    cpuThreshold,
 		StallSeconds:    stallSeconds,
