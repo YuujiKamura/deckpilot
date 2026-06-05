@@ -3,6 +3,7 @@
 - Status: Accepted
 - Decided: 2026-04-30 (deckpilot 着工時)
 - Re-confirmed: 2026-06-04 (一次情報で裏取り、下記 Sources)
+- Corrected: 2026-06-05 (prior art `wt-sidecar` の見落としを訂正 ── 理由を「不可能」→「実用不可」に、決定は不変。Rationale 参照)
 
 ## Context
 
@@ -15,18 +16,24 @@ worker(deck 経由で起動した子 claude)が「終わった / 途中で沈黙
 worker → orchestrator の **event push は作らない**。代わりに UserPromptSubmit hook
 (`~/.claude/hooks/orchestrator-status-pull.sh`)で、**ユーザーの各ターンに状態を pull-inject** する(deckpilot list / open issues / 直近 commit / 未読 worker progress)。
 
-## Rationale(2026-06-04 に一次情報で確認)
+## Rationale(2026-06-04 起稿 / 2026-06-05 訂正)
 
-stock Windows Terminal で走る claude の stdin に、**外部プロセスから入力を注入する supported path は無い**:
+**訂正の経緯**: 本 ADR は当初「stock WT への入力注入は技術的に不可能」と書いたが、それは誤り。本プロジェクトには既に prior art `~/wt-sidecar`(2026-04-08)が在り、stock WT への注入を**実際に実現していた**。その存在と「実用不可」という結論を、作業履歴DB を照会せず見落としていた(2026-06-05 に user 指摘で発見)。以下は訂正後の正しい理由 ── 決定(pull)は変わらず、理由を「不可能」から「実用不可」に差し替える。
 
-- **ConPTY の入力はパイプ経由のみ**。疑似コンソールの入力は、ホスト(WT)が所有する入力パイプに書き込まれ、ConPTY が input record に変換して claude に渡す。そのパイプは WT 所有で、他プロセスからは触れない。
-- **WriteConsoleInput** は別プロセスから ConPTY 相手に **access denied**。さらに MS は「非推奨、VT 等価物なし、他 OS に合わせ意図的に外していく」と明言。
-- **SendInput** はフォアグラウンド固定(宛先引数なし)。
-- **PostMessage(WM_CHAR)** は ConPTY がメッセージキュー経由の入力を読まないため届かない。
+stock WT で走る claude へ、外部プロセスから**非侵襲的に**入力を注入する supported path は無い:
 
-→ push が成立するのは「**claude の入力パイプを握るホストの下で起動した場合**」のみ。それがまさに deckpilot 管理下 ghostty の制御パイプ(CP)で、worker への `deckpilot send` が成立する理由。**stock WT はその入力パイプを露出しない**ので、stock WT のオーケストレータに push は届かない。
+- **ConPTY の入力はパイプ経由のみ**。入力は WT 所有の入力パイプに書かれ、他プロセスからは触れない。
+- **WriteConsoleInput** は別プロセスから ConPTY 相手に access denied(MS も非推奨と明言)。
+- **PostMessage(WM_CHAR)** は ConPTY が読まないため届かない。
 
-polling より「ユーザー発話で必ず読まれる」pull 経路の方が、stock 端末では物理的に確実。
+唯一実現した注入経路が **wt-sidecar の方式** ── UIA で画面を読み、`SendInput` で入力を送る。だがこれは実用に耐えなかった:
+
+- `SendInput` は宛先指定が無くフォアグラウンド固定。注入の度に `SetForegroundWindow` で対象を**前面に奪う**必要がある。
+- = user が他作業中に勝手にフォーカスを奪って割り込む。「空恐ろしい / 迷惑」と user フィードバックで**中止**。CLAUDE.md「マウス・キー占有禁止」ルールの由来がこれ。
+
+→ stock WT への push は技術的には可能だが、唯一の経路が侵襲的で実用不可。一方、**claude の入力パイプを握るホストの下で起動すれば**非侵襲に注入できる ── それが deckpilot 管理下 ghostty の制御パイプ(CP)で、`deckpilot send` が成立する理由。stock WT はその入力パイプを露出しないので、非侵襲な push は届かない。
+
+ゆえに stock 端末のオーケストレータには pull(ユーザー発話で必ず読まれる)。瞬間 push が要るなら、オーケストレータ自身を管理下 ghostty で起動する(下記 Consequences)。
 
 ## Consequences
 
@@ -39,6 +46,7 @@ polling より「ユーザー発話で必ず読まれる」pull 経路の方が�
 - WriteConsoleInput function — Microsoft Learn: https://learn.microsoft.com/en-us/windows/console/writeconsoleinput
 - AttachConsole() does not take user-input as expected — Microsoft Q&A: https://learn.microsoft.com/en-us/answers/questions/672400/
 - Creating a Pseudoconsole session — Microsoft Learn: https://learn.microsoft.com/en-us/windows/console/creating-a-pseudoconsole-session
+- Prior art(本プロジェクト内): `~/wt-sidecar`(2026-04-08, Gemini 2.0 Flash 製)── stock WT を UIA 読取 + `SendInput` 注入 + 名前付きパイプで CP に橋渡しし、deckpilot から ghostty 同様に扱えるようにした実装。注入の度に前面を奪う制約で実用不可と判明し、push の根拠ではなく「侵襲的経路は採らない」の根拠として残る。
 
 ## 出典・謝辞
 
