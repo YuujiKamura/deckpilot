@@ -201,8 +201,16 @@ func (d *Daemon) handleSend(parts []string) string {
 	// baseline — that proves the typed text landed in the TUI. Capture the
 	// resulting hash as preEnterHash: the "idle with text-in-prompt" state
 	// that Phase 3 will compare future samples against.
-	preEnterHash := ""
-	for i := 0; i < 20; i++ { // up to ~600ms
+	// 2026-06-15 fix: claude (Anthropic TUI) は alt screen で input box を持つので、
+	// SendKeys で input box に書き込まれた typed text は ghostty scrollback に echo されない。
+	// 旧版は「scrollback hash 変化 = typed visible」 と短絡判定し、 alt screen TUI を
+	// 「text_not_visible」 と誤判定して ghostty を kill していた (user 観察「ClaudeCode は普通に
+	// 起動してるのに kill されてる」 で確定)。 phase1.5 を 「hash 変化があれば preEnterHash を更新、
+	// 変化が見えなくても baselineHash を preEnterHash として fall-through」 に変更。 typed の
+	// 失敗検出は Phase 3 (ConfirmSubmit) の stuck 判定に委ねる ── Enter で claude が応答すれば
+	// alt screen でも spinner / 応答 line で必ず描画変化する。
+	preEnterHash := baselineHash
+	for i := 0; i < 20; i++ { // up to ~600ms — early-break on visible diverge
 		buf, _ := tailFn()
 		h := BufHash(buf)
 		if h != baselineHash && buf != "" {
@@ -210,9 +218,6 @@ func (d *Daemon) handleSend(parts []string) string {
 			break
 		}
 		time.Sleep(30 * time.Millisecond)
-	}
-	if preEnterHash == "" {
-		return "ERR|text_not_visible|phase1_timeout\n"
 	}
 
 	// Phase 2: submit via RAW_INPUT(\r) as a standalone key event.
