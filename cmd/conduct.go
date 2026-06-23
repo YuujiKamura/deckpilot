@@ -7,21 +7,24 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/YuujiKamura/deckpilot/daemon"
 )
 
-// ChecklistItem is a single parsed line in a conduct checklist file.
 type ChecklistItem struct {
 	LineIdx int  // 0-based line number in the source file
 	Body    string
-	Checked bool
+	Mark    string
 }
 
-var checkboxRe = regexp.MustCompile(`^\s*-\s+\[([ xX])\]\s+(.+?)\s*$`)
+var checkboxRe = regexp.MustCompile(`^\s*-\s+\[([ xX>!~])\]\s+(.+?)\s*$`)
 
 // ParseChecklist parses markdown content and returns each `- [ ]` / `- [x]`
 // line as a ChecklistItem. Non-matching lines are skipped.
@@ -37,16 +40,15 @@ func ParseChecklist(content string) []ChecklistItem {
 		out = append(out, ChecklistItem{
 			LineIdx: i,
 			Body:    strings.TrimSpace(m[2]),
-			Checked: mark == "x" || mark == "X",
+			Mark:    mark,
 		})
 	}
 	return out
 }
 
-// PickNextTodo returns the first unchecked item, in file order.
 func PickNextTodo(items []ChecklistItem) (ChecklistItem, bool) {
 	for _, it := range items {
-		if !it.Checked {
+		if it.Mark == " " {
 			return it, true
 		}
 	}
@@ -75,10 +77,10 @@ func MarkDispatched(content string, lineIdx int) (string, error) {
 	// capture group 1 is the mark character. Its absolute indices in `line`
 	// are m[2]..m[3].
 	mark := line[m[2]:m[3]]
-	if mark == "x" || mark == "X" {
-		return "", fmt.Errorf("MarkDispatched: line %d already checked", lineIdx)
+	if mark != " " {
+		return "", fmt.Errorf("MarkDispatched: line %d already checked or running", lineIdx)
 	}
-	lines[lineIdx] = line[:m[2]] + "x" + line[m[3]:]
+	lines[lineIdx] = line[:m[2]] + ">" + line[m[3]:]
 	out := strings.Join(lines, "\n")
 	if hadTrailingNL {
 		out += "\n"
@@ -86,20 +88,19 @@ func MarkDispatched(content string, lineIdx int) (string, error) {
 	return out, nil
 }
 
-// ConductArgs is the parsed `deckpilot conduct` flag set.
 type ConductArgs struct {
 	File       string
 	Agent      string
 	Interval   time.Duration
 	OneShot    bool // dispatch one and exit (smoke / dry-run friendly)
+	MaxWorkers int
 }
 
-// ParseConductArgs parses CLI args. Returns (parsed, "") on success, or
-// (zero, errmsg) on a usage error. Caller writes errmsg and exits.
 func ParseConductArgs(args []string) (ConductArgs, string) {
 	out := ConductArgs{
-		Agent:    "claude",
-		Interval: 30 * time.Second,
+		Agent:      "claude",
+		Interval:   30 * time.Second,
+		MaxWorkers: 3,
 	}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -125,10 +126,20 @@ func ParseConductArgs(args []string) (ConductArgs, string) {
 			}
 			out.Interval = d
 			i++
+		case "--max-workers":
+			if i+1 >= len(args) {
+				return ConductArgs{}, "--max-workers requires a number"
+			}
+			val, err := strconv.Atoi(args[i+1])
+			if err != nil {
+				return ConductArgs{}, fmt.Sprintf("--max-workers: %v", err)
+			}
+			out.MaxWorkers = val
+			i++
 		case "--one-shot":
 			out.OneShot = true
 		case "-h", "--help":
-			return ConductArgs{}, "usage: deckpilot conduct --file PATH [--agent NAME] [--interval 30s] [--one-shot]"
+			return ConductArgs{}, "usage: deckpilot conduct --file PATH [--agent NAME] [--interval 30s] [--max-workers 3] [--one-shot]"
 		default:
 			return ConductArgs{}, fmt.Sprintf("unknown flag: %s", args[i])
 		}
@@ -157,6 +168,7 @@ func Conduct(args []string) {
 type launchFn func(args []string)
 
 func conductLoop(cfg ConductArgs, launch launchFn) error {
+	daemon.EnsureRunning()
 	for {
 		dispatched, err := conductTick(cfg, launch)
 		if err != nil {
@@ -172,7 +184,25 @@ func conductLoop(cfg ConductArgs, launch launchFn) error {
 	}
 }
 
+func countActiveSessions() (int, error) {
+	raw, err := daemon.DaemonList()
+	if err != nil {
+		return 0, err
+	}
+	var sessions []map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &sessions); err != nil {
+		return 0, err
+	}
+	return len(sessions), nil
+}
+
 func conductTick(cfg ConductArgs, launch launchFn) (bool, error) {
+	active, err := countActiveSessions()
+	if err == nil && active >= cfg.MaxWorkers {
+		fmt.Fprintf(os.Stderr, "conduct: max workers reached (%d/%d), waiting...\n", active, cfg.MaxWorkers)
+		return false, nil
+	}
+
 	body, err := os.ReadFile(cfg.File)
 	if err != nil {
 		return false, fmt.Errorf("read %s: %w", cfg.File, err)
@@ -192,6 +222,9 @@ func conductTick(cfg ConductArgs, launch launchFn) (bool, error) {
 		return false, fmt.Errorf("write %s: %w", cfg.File, err)
 	}
 	fmt.Fprintf(os.Stderr, "conduct: dispatching %q -> agent=%s\n", todo.Body, cfg.Agent)
-	launch([]string{cfg.Agent, todo.Body})
+	
+	metaPrompt := fmt.Sprintf("\n\n[SYSTEM ORCHESTRATION INSTRUCTION]\nあなたはシステムから投下された自律ワーカーです。タスクの全体計画は %s に記載されています。\nあなたのタスクは以下の行に相当します:\n`- [>] %s`\n作業が完了したら、必ず %s を編集して、上記の行の `[>]` を `[x]` に書き換えてください。もしエラーで完了できない場合は `[!]` に書き換えてください。その後終了してください。", cfg.File, todo.Body, cfg.File)
+	
+	launch([]string{cfg.Agent, todo.Body + metaPrompt})
 	return true, nil
 }
