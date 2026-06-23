@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -106,25 +105,3 @@ func daemonSendWithRetry(sess, msg, caller string, retries int, backoff time.Dur
 	return sendWithSubmitRetry(send, readHash, msg, retries, backoff)
 }
 
-// killGhosttyOnLeak kills a leaked Ghostty process when a launch fails after
-// the window was already started. Safe to call with pid <= 0 (no-op). Errors
-// are logged to stderr but never returned: the caller is already on the exit
-// path, and a failed kill cannot be recovered there.
-//
-// os.FindProcess(pid).Kill() is the cross-platform primitive (TerminateProcess
-// on Windows, signal on Unix). PID reuse between launch and this kill is
-// theoretically possible but negligible in the seconds-long window for a
-// class (c) dev tool.
-func killGhosttyOnLeak(pid int) {
-	if pid <= 0 {
-		return
-	}
-	p, err := os.FindProcess(pid)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "killGhosttyOnLeak: find pid=%d: %v\n", pid, err)
-		return
-	}
-	if err := p.Kill(); err != nil {
-		fmt.Fprintf(os.Stderr, "killGhosttyOnLeak: kill pid=%d: %v\n", pid, err)
-	}
-}

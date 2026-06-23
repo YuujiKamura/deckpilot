@@ -64,6 +64,15 @@ var agents = map[string]AgentDef{
 		ThinkingStr: "Generating", // 実測候補: "Generating", "esc to cancel" (未実測、推測)
 		ErrorStr:    "",
 	},
+	"agy": {
+		Cmd:         "agy",
+		Args:        []string{},
+		ReadyStr:    ">",
+		TrustStr:    "",
+		SubmitKey:   "\r",
+		ThinkingStr: "Generating",
+		ErrorStr:    "",
+	},
 }
 
 // DefaultSubmitKey is the fallback submit key for unknown agents.

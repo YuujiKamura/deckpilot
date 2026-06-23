@@ -25,6 +25,15 @@ var agentApprovalPatterns = map[string][]string{
 		"承認",
 		"許可",
 	},
+	"agy": {
+		"Y/n",
+		"(y/N)",
+		"Allow execution of",
+		"Accept",
+		"実行を許可しますか",
+		"承認",
+		"許可",
+	},
 	"codex": {
 		"Would you like to run",
 		"Press enter to confirm",
@@ -79,6 +88,10 @@ func inferAgentFromBuffer(content string) string {
 	// Gemini CLI banner / prompt markers
 	if strings.Contains(tail, "Gemini") || strings.Contains(tail, "gemini>") {
 		return "gemini"
+	}
+	// Antigravity (agy) CLI banner / prompt markers
+	if strings.Contains(tail, "Antigravity") || strings.Contains(tail, "agy>") {
+		return "agy"
 	}
 	// Codex CLI marker
 	if strings.Contains(tail, "codex>") || strings.Contains(tail, "Codex") {
