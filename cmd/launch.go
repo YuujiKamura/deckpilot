@@ -123,7 +123,11 @@ func Launch(args []string) {
 	// Launch plain Ghostty, then send commands via CP after session is up.
 	// Using -e causes IO thread errors on debug builds, so we launch bare
 	// and type the command into the shell.
-	cmd := exec.Command(ghosttyExe)
+	// We use explorer.exe to spawn ghostty because CREATE_BREAKAWAY_FROM_JOB
+	// fails if the current job object has strict limits (e.g. from antigravity-cli).
+	// explorer.exe delegates the launch to the main Explorer process (DCOM),
+	// completely escaping the job object.
+	cmd := exec.Command("explorer.exe", ghosttyExe)
 	cmd.Dir = cwd
 	cmd.Stdin = nil
 	cmd.Stdout = nil
