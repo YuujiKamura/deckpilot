@@ -14,7 +14,7 @@ type AgentDef struct {
 var agents = map[string]AgentDef{
 	"codex": {
 		Cmd:         "codex",
-		Args:        []string{"--full-auto"},
+		Args:        []string{"--dangerously-bypass-approvals-and-sandbox"},
 		ReadyStr:    "\xe2\x80\xba", // › (U+203A) - the Codex prompt marker
 		TrustStr:    "trust the contents",
 		SubmitKey:   "\r",
