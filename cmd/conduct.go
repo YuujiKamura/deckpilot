@@ -186,14 +186,14 @@ func Conduct(args []string) {
 		fmt.Fprintln(os.Stderr, errMsg)
 		os.Exit(1)
 	}
-	if err := conductLoop(parsed, Launch); err != nil {
+	if err := conductLoop(parsed, LaunchWithError); err != nil {
 		fmt.Fprintf(os.Stderr, "conduct: %v\n", err)
 		os.Exit(1)
 	}
 }
 
 // launchFn is the seam for tests; the real implementation is cmd.Launch.
-type launchFn func(args []string)
+type launchFn func(args []string) error
 
 func conductLoop(cfg ConductArgs, launch launchFn) error {
 	daemon.EnsureRunning()
@@ -257,7 +257,15 @@ func conductTick(cfg ConductArgs, launch launchFn) (bool, error) {
 	
 	metaPrompt := fmt.Sprintf("\n\n[SYSTEM ORCHESTRATION INSTRUCTION]\nあなたはシステムから投下された自律ワーカーです。タスクの全体計画は %s に記載されています。\nあなたのタスクは以下の行に相当します:\n`- [>] %s`\n作業が完了したら、必ず %s を編集して、上記の行の `[>]` を `[x]` に書き換えてください。もしエラーで完了できない場合は `[!]` に書き換えてください。その後終了してください。", cfg.File, todo.Body, cfg.File)
 	
-	launch([]string{cfg.Agent, todo.Body + metaPrompt})
+	if err := launch([]string{cfg.Agent, todo.Body + metaPrompt}); err != nil {
+		// Launch failed. Rewrite [>] to [!] so the task is not stuck in running state,
+		// and the daemon stops further automatic processing.
+		failedBody, markErr := MarkFailed(string(body), todo.LineIdx)
+		if markErr == nil {
+			_ = os.WriteFile(cfg.File, []byte(failedBody), 0o644)
+		}
+		return false, fmt.Errorf("launch agent failed: %w", err)
+	}
 	return true, nil
 }
 
@@ -305,4 +313,27 @@ func isTaskAlreadyRunning(todoBody string) bool {
 		}
 	}
 	return false
+}
+
+// MarkFailed rewrites `- [ ]` or `- [>]` to `- [!]` on the given 0-based line.
+func MarkFailed(content string, lineIdx int) (string, error) {
+	hadTrailingNL := strings.HasSuffix(content, "\n")
+	lines := strings.Split(content, "\n")
+	if hadTrailingNL {
+		lines = lines[:len(lines)-1]
+	}
+	if lineIdx < 0 || lineIdx >= len(lines) {
+		return "", fmt.Errorf("MarkFailed: line %d out of range (have %d lines)", lineIdx, len(lines))
+	}
+	line := lines[lineIdx]
+	m := checkboxRe.FindStringSubmatchIndex(line)
+	if m == nil {
+		return "", fmt.Errorf("MarkFailed: line %d is not a checkbox: %q", lineIdx, line)
+	}
+	lines[lineIdx] = line[:m[2]] + "!" + line[m[3]:]
+	out := strings.Join(lines, "\n")
+	if hadTrailingNL {
+		out += "\n"
+	}
+	return out, nil
 }

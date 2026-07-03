@@ -193,7 +193,10 @@ func TestConductTick_DispatchesAndMarks(t *testing.T) {
 	}
 
 	var launched [][]string
-	stub := func(args []string) { launched = append(launched, args) }
+	stub := func(args []string) error {
+		launched = append(launched, args)
+		return nil
+	}
 
 	cfg := ConductArgs{File: path, Agent: "claude", OneShot: true}
 	dispatched, err := conductTick(cfg, stub)
@@ -220,7 +223,10 @@ func TestConductTick_NoTodoReturnsFalse(t *testing.T) {
 		t.Fatal(err)
 	}
 	var launched [][]string
-	stub := func(args []string) { launched = append(launched, args) }
+	stub := func(args []string) error {
+		launched = append(launched, args)
+		return nil
+	}
 	cfg := ConductArgs{File: path, Agent: "claude", OneShot: true}
 	dispatched, err := conductTick(cfg, stub)
 	if err != nil {
@@ -243,9 +249,10 @@ func TestConductTick_MarksBeforeDispatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	var observedOnLaunch string
-	stub := func(args []string) {
+	stub := func(args []string) error {
 		b, _ := readFileForTest(path)
 		observedOnLaunch = b
+		return nil
 	}
 	cfg := ConductArgs{File: path, Agent: "claude", OneShot: true}
 	if _, err := conductTick(cfg, stub); err != nil {
@@ -258,7 +265,7 @@ func TestConductTick_MarksBeforeDispatch(t *testing.T) {
 
 func TestConductTick_MissingFile(t *testing.T) {
 	cfg := ConductArgs{File: "/definitely/does/not/exist.md", Agent: "claude", OneShot: true}
-	if _, err := conductTick(cfg, func([]string) {}); err == nil {
+	if _, err := conductTick(cfg, func([]string) error { return nil }); err == nil {
 		t.Fatal("want error for missing file")
 	}
 }

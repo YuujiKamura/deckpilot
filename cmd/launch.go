@@ -71,11 +71,17 @@ func ParseLaunchArgs(args []string, defaultCwd string) (LaunchArgs, string) {
 // session to appear, handles trust confirmation, waits for ready, and sends
 // the prompt. Prints the session name on success.
 func Launch(args []string) {
+	if err := LaunchWithError(args); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		os.Exit(1)
+	}
+}
+
+func LaunchWithError(args []string) error {
 	cwdDefault, _ := os.Getwd()
 	parsed, errMsg := ParseLaunchArgs(args, cwdDefault)
 	if errMsg != "" {
-		fmt.Fprintln(os.Stderr, errMsg)
-		os.Exit(1)
+		return fmt.Errorf("%s", errMsg)
 	}
 
 	agentName := parsed.AgentName
@@ -85,8 +91,7 @@ func Launch(args []string) {
 		for k := range agents {
 			names = append(names, k)
 		}
-		fmt.Fprintf(os.Stderr, "unknown agent: %s (available: %s)\n", agentName, strings.Join(names, ", "))
-		os.Exit(1)
+		return fmt.Errorf("unknown agent: %s (available: %s)", agentName, strings.Join(names, ", "))
 	}
 
 	cwd := parsed.Cwd
@@ -94,8 +99,7 @@ func Launch(args []string) {
 	noMetaPrompt := parsed.NoMetaPrompt
 
 	if err := daemon.EnsureRunning(); err != nil {
-		fmt.Fprintf(os.Stderr, "daemon: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("daemon: %w", err)
 	}
 
 	// Snapshot current sessions
@@ -104,15 +108,13 @@ func Launch(args []string) {
 	// Find and launch Ghostty
 	ghosttyExe := FindGhostty()
 	if ghosttyExe == "" {
-		fmt.Fprintln(os.Stderr, "ghostty not found. Set GHOSTTY_EXE or install ghostty on PATH")
-		os.Exit(1)
+		return fmt.Errorf("ghostty not found. Set GHOSTTY_EXE or install ghostty on PATH")
 	}
 
 	if !parsed.SharedCwd {
 		isolatedCwd, isolated, err := maybeCreateLaunchWorktree(cwd, agentName)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "worktree isolation: %v\n", err)
-			os.Exit(1)
+			return fmt.Errorf("worktree isolation: %w", err)
 		}
 		if isolated {
 			cwd = isolatedCwd
@@ -136,8 +138,7 @@ func Launch(args []string) {
 		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP | 0x00000008, // DETACHED_PROCESS = 0x00000008
 	}
 	if err := cmd.Start(); err != nil {
-		fmt.Fprintf(os.Stderr, "launch ghostty: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("launch ghostty: %w", err)
 	}
 	// Once started, completely detach. Do not Wait(), do not keep handles.
 	// The daemon will pick up the session via file scanning.
@@ -149,8 +150,7 @@ func Launch(args []string) {
 	// Wait for new session to appear
 	sessionName, err := waitForNewSession(knownSessions, 15*time.Second)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "session detect: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("session detect: %w", err)
 	}
 	fmt.Fprintf(os.Stderr, "session: %s\n", sessionName)
 
@@ -181,29 +181,27 @@ func Launch(args []string) {
 	caller := strconv.Itoa(os.Getppid())
 	_, err = daemonSendWithRetry(sessionName, launchCmd, caller, 3, 2*time.Second)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "send launch cmd: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("send launch cmd: %w", err)
 	}
 	fmt.Fprintf(os.Stderr, "sent launch: %s %s\n", agent.Cmd, strings.Join(agent.Args, " "))
 
 	// Wait for trust or ready
 	err = waitForReady(sessionName, agent, 60*time.Second)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "ready wait: %v (leaving Ghostty for debugging)\n", err)
-		os.Exit(1)
+		return fmt.Errorf("ready wait: %w (leaving Ghostty for debugging)", err)
 	}
 	fmt.Fprintf(os.Stderr, "ready: %s\n", agentName)
 
 	// Send prompt
 	result, err := daemonSendWithRetry(sessionName, prompt, caller, 3, 2*time.Second)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "send: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("send: %w", err)
 	}
 	fmt.Fprintf(os.Stderr, "sent: %s\n", result)
 
 	// Print session name to stdout for scripting
 	fmt.Println(sessionName)
+	return nil
 }
 
 func quoteShellArgs(args []string) string {
