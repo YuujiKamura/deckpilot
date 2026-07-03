@@ -174,8 +174,8 @@ func LaunchWithError(args []string) error {
 	// Send cd + agent launch command.
 	// Use cmd /k so that the shell does not exit when the agent exits autonomously,
 	// keeping the Ghostty window open for log inspection.
-	launchCmd := fmt.Sprintf("cmd /k \"cd /d \"%s\" && %s %s\"",
-		cwd,
+	launchCmd := fmt.Sprintf("cmd /k \"cd /d %s && %s %s\"",
+		quoteShellArg(cwd),
 		agent.Cmd,
 		quoteShellArgs(agent.Args))
 	caller := strconv.Itoa(os.Getppid())
