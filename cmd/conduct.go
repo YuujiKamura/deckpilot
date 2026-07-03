@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"path/filepath"
+
 	"github.com/YuujiKamura/deckpilot/daemon"
 )
 
@@ -31,7 +33,33 @@ var checkboxRe = regexp.MustCompile(`^\s*-\s+\[([ xX>!~])\]\s+(.+?)\s*$`)
 func ParseChecklist(content string) []ChecklistItem {
 	var out []ChecklistItem
 	lines := strings.Split(content, "\n")
+	inHTMLComment := false
+	inCodeBlock := false
+
 	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Handle Code Block boundary
+		if strings.HasPrefix(trimmed, "```") {
+			inCodeBlock = !inCodeBlock
+			continue
+		}
+
+		// Handle HTML Comment boundaries
+		if strings.Contains(trimmed, "<!--") {
+			inHTMLComment = true
+		}
+
+		isSkipped := inHTMLComment || inCodeBlock
+
+		if strings.Contains(trimmed, "-->") {
+			inHTMLComment = false
+		}
+
+		if isSkipped {
+			continue
+		}
+
 		m := checkboxRe.FindStringSubmatch(line)
 		if m == nil {
 			continue
@@ -212,6 +240,10 @@ func conductTick(cfg ConductArgs, launch launchFn) (bool, error) {
 	if !ok {
 		return false, nil
 	}
+	if isTaskAlreadyRunning(todo.Body) {
+		fmt.Fprintf(os.Stderr, "conduct: task %q is already running in an active session, skipping duplicate launch\n", todo.Body)
+		return false, nil
+	}
 	// Rewrite + flush BEFORE launching so a crash mid-launch cannot cause
 	// the same task to be dispatched twice on next tick.
 	newBody, err := MarkDispatched(string(body), todo.LineIdx)
@@ -227,4 +259,50 @@ func conductTick(cfg ConductArgs, launch launchFn) (bool, error) {
 	
 	launch([]string{cfg.Agent, todo.Body + metaPrompt})
 	return true, nil
+}
+
+func isTaskAlreadyRunning(todoBody string) bool {
+	raw, err := daemon.DaemonList()
+	if err != nil {
+		return false
+	}
+	var sessions []map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &sessions); err != nil {
+		return false
+	}
+
+	homeDir := os.Getenv("USERPROFILE")
+	if homeDir == "" {
+		homeDir = os.Getenv("HOME")
+	}
+
+	for _, sess := range sessions {
+		nameVal, ok := sess["name"]
+		if !ok {
+			continue
+		}
+		name, ok := nameVal.(string)
+		if !ok {
+			continue
+		}
+
+		metaPath := filepath.Join(homeDir, ".deckpilot", "launch-meta", name+".json")
+		if _, err := os.Stat(metaPath); err != nil {
+			continue
+		}
+
+		data, err := os.ReadFile(metaPath)
+		if err != nil {
+			continue
+		}
+		var meta LaunchMeta
+		if err := json.Unmarshal(data, &meta); err != nil {
+			continue
+		}
+
+		if strings.HasPrefix(meta.Prompt, todoBody) {
+			return true
+		}
+	}
+	return false
 }

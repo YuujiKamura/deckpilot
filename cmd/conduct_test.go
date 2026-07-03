@@ -27,6 +27,31 @@ not a checkbox
 	}
 }
 
+func TestParseChecklist_HTMLCommentsAndCodeBlocks(t *testing.T) {
+	src := `# tasks
+
+- [ ] do foo
+<!--
+- [ ] do comment
+- [x] done comment
+-->
+- [ ] do bar
+` + "```" + `
+- [ ] do code
+` + "```" + `
+- [ ] do baz
+`
+	got := ParseChecklist(src)
+	want := []ChecklistItem{
+		{LineIdx: 2, Body: "do foo", Checked: false},
+		{LineIdx: 8, Body: "do bar", Checked: false},
+		{LineIdx: 12, Body: "do baz", Checked: false},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ParseChecklist HTML/Code skip mismatch:\n got=%#v\nwant=%#v", got, want)
+	}
+}
+
 func TestParseChecklist_EmptyAndNoMatches(t *testing.T) {
 	if got := ParseChecklist(""); len(got) != 0 {
 		t.Fatalf("empty: want 0 items, got %d", len(got))
