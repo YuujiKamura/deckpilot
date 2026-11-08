@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -342,6 +343,10 @@ func waitForNewSession(known []string, timeout time.Duration) (string, error) {
 func waitForReady(session string, agent AgentDef, timeout time.Duration) error {
 	caller := strconv.Itoa(os.Getppid())
 	deadline := time.Now().Add(timeout)
+	trustAccepted := false
+	trustMoveCount := 0
+	trustMoveChecks := 0
+	trustDismissChecks := 0
 
 	for time.Now().Before(deadline) {
 		time.Sleep(1 * time.Second)
@@ -358,16 +363,43 @@ func waitForReady(session string, agent AgentDef, timeout time.Duration) error {
 		// firing, sending the prompt into the unanswered menu. TrustStr
 		// non-empty just opts the agent into the check.
 		if looksLikeTrustDialog(output) {
-			// Send Enter to accept trust ("Yes, I trust" is the default).
-			// Do NOT gate readiness on having seen a dialog: most folders are
-			// already trusted and never show one — gating hung the launch
-			// forever waiting for a dialog that never came (2026-06-04
-			// regression: claude was ready, launch killed it at the timeout).
-			daemon.DaemonSend(session, "", caller)
-			time.Sleep(2 * time.Second)
-			continue
+			if trustAccepted {
+				trustDismissChecks++
+				if trustDismissChecks >= 5 {
+					return fmt.Errorf("trust confirmation was sent once but the dialog did not close; session left open for inspection")
+				}
+				continue // wait for the one confirmation to dismiss; never repeat Enter
+			}
+			key, ready := trustDialogKey(output)
+			if key != "" && trustMoveCount < 1 {
+				if err := daemon.DaemonSendRaw(session, []byte(key)); err != nil {
+					return fmt.Errorf("trust dialog navigation failed: %w", err)
+				}
+				trustMoveCount++
+				continue
+			}
+			if key != "" && trustMoveCount == 1 {
+				trustMoveChecks++
+				if trustMoveChecks < 5 {
+					continue // allow the TUI to redraw; never repeat the navigation key
+				}
+				return fmt.Errorf("trust option did not become selected after navigation; session left open for inspection")
+			}
+			if ready {
+				if _, err := daemon.DaemonSend(session, "", caller); err != nil {
+					return fmt.Errorf("trust confirmation failed: %w", err)
+				}
+				trustAccepted = true
+				continue
+			}
+			return fmt.Errorf("trust dialog found but cannot identify a selected trust option; leaving session open")
 		}
-
+		if trustAccepted && looksLikeCommandPrompt(output) {
+			return fmt.Errorf("Claude exited after trust confirmation and returned to the command prompt; session left open for inspection")
+		}
+		if trustAccepted {
+			trustDismissChecks = 0
+		}
 		// Check for ready  Eonce the ready string is visible, the agent
 		// has rendered its prompt.  We don't require status=="idle" because
 		// TUI agents (Claude Code, etc.) keep updating the terminal (cursor
@@ -379,6 +411,48 @@ func waitForReady(session string, agent AgentDef, timeout time.Duration) error {
 	}
 
 	return fmt.Errorf("agent did not become ready within %v", timeout)
+}
+
+var commandPromptLine = regexp.MustCompile(`(?m)^\s*[A-Za-z]:\\[^\r\n]*>\s*$`)
+
+func looksLikeCommandPrompt(buf string) bool { return commandPromptLine.MatchString(buf) }
+
+// trustDialogKey chooses only from an explicitly rendered selection. A
+// positive choice is confirmed only after the buffer shows it selected.
+func trustDialogKey(buf string) (navigate string, trustSelected bool) {
+	lines := strings.Split(buf, "\n")
+	for i, line := range lines {
+		choice := selectedTrustChoice(line)
+		if choice == "" {
+			continue
+		}
+		if isPositiveTrustChoice(choice) {
+			return "", true
+		}
+		if !strings.Contains(choice, "no") && !strings.Contains(choice, "exit") {
+			return "", false
+		}
+		if i+1 < len(lines) && isPositiveTrustChoice(strings.ToLower(strings.TrimSpace(lines[i+1]))) {
+			return "\x1b[B", false
+		}
+		if i > 0 && isPositiveTrustChoice(strings.ToLower(strings.TrimSpace(lines[i-1]))) {
+			return "\x1b[A", false
+		}
+		return "", false
+	}
+	return "", false
+}
+
+func selectedTrustChoice(line string) string {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, "❯") && !strings.HasPrefix(trimmed, "›") {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(strings.TrimLeft(trimmed, "❯› ")))
+}
+
+func isPositiveTrustChoice(choice string) bool {
+	return strings.Contains(choice, "trust") || strings.Contains(choice, "yes")
 }
 
 // looksLikeTrustDialog fuzzily detects a folder-trust / workspace-trust

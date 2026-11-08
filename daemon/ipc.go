@@ -8,9 +8,9 @@ import (
 	"log"
 	"net"
 	"net/url"
+	"os"
 	"strings"
 	"time"
-	"os"
 
 	"github.com/Microsoft/go-winio"
 	"github.com/YuujiKamura/deckpilot/pipe"
@@ -51,6 +51,8 @@ func (d *Daemon) handleConn(conn net.Conn) {
 		resp = "PONG\n"
 	case "SEND":
 		resp = d.handleSend(parts)
+	case "SENDRAW":
+		resp = d.handleSendRaw(parts)
 	case "LIST":
 		resp = d.handleList()
 	case "SHOW":
@@ -68,6 +70,28 @@ func (d *Daemon) handleConn(conn net.Conn) {
 	}
 
 	conn.Write([]byte(resp))
+}
+
+func (d *Daemon) handleSendRaw(parts []string) string {
+	if len(parts) != 3 || strings.ContainsAny(parts[1], "|\r\n") {
+		return "ERR|usage: SENDRAW|<name>|<base64bytes>\n"
+	}
+	name := parts[1]
+	data, err := base64.StdEncoding.DecodeString(parts[2])
+	if err != nil {
+		return fmt.Sprintf("ERR|bad base64: %v\n", err)
+	}
+	if len(data) == 0 {
+		return "ERR|empty raw input\n"
+	}
+	pipePath, ok := d.resolvePipePath(name)
+	if !ok || pipePath == "" {
+		return fmt.Sprintf("ERR|no pipe for session %q\n", name)
+	}
+	if _, err := pipe.SendRaw(pipePath, data); err != nil {
+		return fmt.Sprintf("ERR|send raw: %v\n", err)
+	}
+	return "OK|sent raw\n"
 }
 
 func handleVersion() string {
@@ -494,6 +518,25 @@ func DaemonSend(name, message, caller string) (string, error) {
 		return "", fmt.Errorf("%s", strings.TrimPrefix(resp, "ERR|"))
 	}
 	return strings.TrimPrefix(resp, "OK|"), nil
+}
+
+// DaemonSendRaw sends key bytes without appending Enter.
+func DaemonSendRaw(name string, data []byte) error {
+	if strings.ContainsAny(name, "|\r\n") {
+		return fmt.Errorf("invalid session name for raw send")
+	}
+	encoded := base64.StdEncoding.EncodeToString(data)
+	resp, err := dialDaemon(fmt.Sprintf("SENDRAW|%s|%s", name, encoded))
+	if err != nil {
+		return err
+	}
+	if strings.HasPrefix(resp, "ERR|") {
+		return fmt.Errorf("%s", strings.TrimPrefix(resp, "ERR|"))
+	}
+	if !strings.HasPrefix(resp, "OK|") {
+		return fmt.Errorf("unexpected raw-send response: %q", resp)
+	}
+	return nil
 }
 
 // DaemonList returns the JSON array of sessions from the daemon.
