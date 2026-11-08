@@ -337,9 +337,15 @@ func (w *Watcher) updateContent(content string) {
 	w.lastContent = content
 	changed := hash != w.lastHash
 	prevStatus := w.lastStatus
-
-	// Only update status if not already marked as stalled by poll()
-	if w.status != "stalled" {
+	if isLaunchedAgentAtShellPrompt(w.name, content) {
+		if w.status != "dead" {
+			w.deadAt = time.Now()
+			w.lastError = "agent exited and returned to the command prompt"
+		}
+		w.lastHash = hash
+		w.stableCount = 0
+		w.status = "dead"
+	} else if w.status != "stalled" {
 		if changed {
 			w.lastHash = hash
 			w.stableCount = 0
@@ -532,6 +538,7 @@ type WatcherProfile struct {
 	LastPollOK  time.Time
 	DeadAt      time.Time
 	LastError   string
+	LastContent string
 }
 
 // Profile returns a snapshot of this watcher's profiling counters.
@@ -548,6 +555,7 @@ func (w *Watcher) Profile() WatcherProfile {
 		LastPollOK:  w.lastPollOK,
 		DeadAt:      w.deadAt,
 		LastError:   w.lastError,
+		LastContent: w.lastContent,
 	}
 }
 

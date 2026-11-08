@@ -58,7 +58,7 @@ Each command has a single, well-defined responsibility:
 deckpilot send <session> <message...>
 ```
 
-Sends text + Enter to the specified session. Compares buffer hash before and after sending; retries automatically if not reflected.
+Sends text + Enter to the specified session. Compares buffer hash before and after sending; reports `accepted` (previously idle), `queued` (previously active), or `no-effect` (the buffer did not move). Unconfirmed sends remain explicitly marked as unconfirmed.
 
 - Pauses the Watcher before queuing the command (prevents pipe I/O races).
 - Slash commands (`/`-prefixed) send Enter twice to bypass TUI autocomplete.
@@ -92,6 +92,9 @@ ghostty-39   winui3   stalled
 ```
 
 `stalled` indicates the daemon's `IsHungAppWindow(hwnd)` probe returned TRUE — the OS-authoritative hang signal that `hang-detect` consults as its fast path.
+Sessions launched through deckpilot also show the recorded agent, cwd, and
+launch time. `--json` includes the same fields. Dead sessions carry the last
+watcher error and last three terminal lines.
 
 ### `launch` — Start an agent
 
@@ -99,14 +102,17 @@ ghostty-39   winui3   stalled
 deckpilot launch <agent> <prompt...> [--cwd DIR] [--shared-cwd] [--no-meta-prompt]
 ```
 
-Starts a new Ghostty window, waits for the agent to be ready, then sends the prompt. Prints the session name to stdout for use in scripts.
+Checks the agent CLI and configured launch flags first, then starts a Ghostty
+window, waits for the agent to be ready, and sends the prompt. On readiness
+failure it saves the last buffer and leaves the window open. Prints the session
+name to stdout on success.
 
 | Agent  | Command                                      | Ready string |
 |--------|----------------------------------------------|--------------|
 | claude | `claude --dangerously-skip-permissions`      | `>`          |
 | sonnet | `claude --dangerously-skip-permissions --model sonnet` | `>` |
 | haiku  | `claude --dangerously-skip-permissions --model haiku`  | `>` |
-| codex  | `codex --full-auto`                          | `›`          |
+| codex  | `codex --dangerously-bypass-approvals-and-sandbox` | `›`     |
 | gemini | `gemini`                                     | `>`          |
 
 When launched from inside a git repository, `deckpilot launch` creates a
@@ -114,6 +120,13 @@ detached worktree under `~/.deckpilot/worktrees/` and runs the agent there by
 default. This keeps auto-approved sessions away from the shared dirty worktree.
 Use `--shared-cwd` only when the session must operate in the original working
 tree.
+
+If readiness times out, the last full terminal buffer and
+readiness observations are saved under `~/.deckpilot/launch-fail/`. The window
+is left open for inspection. `deckpilot list` shows agent, cwd, and launch time
+when metadata exists; dead entries show the watcher error and last three
+output lines. `deckpilot prune <session>` removes tracking only when the session
+is marked dead; it does not kill Ghostty.
 
 #### Prompt persistence and `--no-meta-prompt`
 
@@ -267,13 +280,18 @@ deckpilot notify add stdout "Task completed"
 deckpilot notify add http https://hooks.slack.com/webhook POST
 deckpilot notify add send main-session "Background task finished" --session ghostty-39964
 deckpilot notify list
+deckpilot notify inbox --tail 20
 deckpilot notify remove          # removes all (currently bulk-only)
 ```
+
+Callback notifications are stored in `~/.deckpilot/notifications.jsonl` and
+read with `deckpilot notify inbox`; they are not typed into an agent's prompt.
+The inbox is append-only and retains its history until manually removed.
 
 ### `wait-idle` — Block until a session goes idle
 
 ```bash
-deckpilot wait-idle <session> [--timeout=DUR] [--poll=DUR]
+deckpilot wait-idle <session> [--timeout=DUR] [--poll=DUR] [--tail N]
 ```
 
 Blocks the calling process until the named session transitions to `idle`. Pairs naturally with background-task push notifications:
@@ -282,6 +300,9 @@ Blocks the calling process until the named session transitions to `idle`. Pairs 
 deckpilot launch claude "long-running refactor"
 deckpilot wait-idle <session> && curl -X POST $SLACK_HOOK -d '{"text":"done"}'
 ```
+
+`--tail N` prints the last N terminal lines when the wait ends. Idle means the
+terminal returned to an idle state; it does not prove that the task is done.
 
 ### `cleanup` — Sweep on-disk artefacts
 
@@ -314,6 +335,12 @@ deckpilot version
 ```
 
 Prints the embedded version, commit, and build time.
+
+To build and update the CLI manually, run
+`DECKPILOT_SKIP_DEPLOY=1 bash scripts/build.sh`, then copy the resulting
+`deckpilot.exe` to `~/bin/deckpilot.exe`. A running daemon stays on the code
+version that started it. Restarting it interrupts session monitoring, so only
+do that when the interruption is acceptable.
 
 ## Caller Identification
 

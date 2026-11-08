@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -53,11 +52,8 @@ func newIdleNotification(target string) BufferNotification {
 // centralized removal, a second status transition within the cleanup window
 // could double-fire the same one-time hook. Lock the invariant now.
 func TestHookInvariant_OneTimeFiresExactlyOnce(t *testing.T) {
+	useNotificationTestHome(t)
 	d := New()
-	callerW := NewWatcher("caller", "p", "f", 1, "", nil)
-	d.mu.Lock()
-	d.watchers["caller"] = callerW
-	d.mu.Unlock()
 
 	d.AddIdleHook(IdleHook{
 		Type:            "callback",
@@ -65,10 +61,6 @@ func TestHookInvariant_OneTimeFiresExactlyOnce(t *testing.T) {
 		CallbackSession: "caller",
 		OneTime:         true,
 	})
-
-	var got int32
-	stop := drainCaller(callerW, &got, nil, nil)
-	defer stop()
 
 	notif := newIdleNotification("target")
 
@@ -78,11 +70,12 @@ func TestHookInvariant_OneTimeFiresExactlyOnce(t *testing.T) {
 	d.executeStatusHooks(notif)
 	d.executeStatusHooks(notif)
 
-	// Give both Execute goroutines + the 100ms cleanup time to drain.
+	// Give both async event writes and one-time cleanup time to land.
 	time.Sleep(300 * time.Millisecond)
 
-	if n := atomic.LoadInt32(&got); n != 1 {
-		t.Fatalf("OneTime invariant violated: hook fired %d times (expected 1)", n)
+	events, err := ReadNotificationEvents(20)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("OneTime invariant violated: events=%d err=%v", len(events), err)
 	}
 	// And the hook must actually be gone from the registry afterwards.
 	if hooks := d.ListIdleHooks(); len(hooks) != 0 {
@@ -129,11 +122,8 @@ func TestHookInvariant_DeadCallbackSessionDoesNotCrash(t *testing.T) {
 // transitions to shake out data races in the hook executor. Run the suite
 // with -race to catch regressions introduced by per-adapter state.
 func TestHookInvariant_ConcurrentFiresDoNotRace(t *testing.T) {
+	useNotificationTestHome(t)
 	d := New()
-	callerW := NewWatcher("caller", "p", "f", 1, "", nil)
-	d.mu.Lock()
-	d.watchers["caller"] = callerW
-	d.mu.Unlock()
 
 	// Non-OneTime so we can fire many times without registration churn.
 	d.AddIdleHook(IdleHook{
@@ -142,10 +132,6 @@ func TestHookInvariant_ConcurrentFiresDoNotRace(t *testing.T) {
 		CallbackSession: "caller",
 		OneTime:         false,
 	})
-
-	var got int32
-	stop := drainCaller(callerW, &got, nil, nil)
-	defer stop()
 
 	const parallel = 16
 	var wg sync.WaitGroup
@@ -159,8 +145,9 @@ func TestHookInvariant_ConcurrentFiresDoNotRace(t *testing.T) {
 	wg.Wait()
 	time.Sleep(200 * time.Millisecond)
 
-	if n := atomic.LoadInt32(&got); n != parallel {
-		t.Fatalf("concurrent invariant: expected %d fires, got %d", parallel, n)
+	events, err := ReadNotificationEvents(parallel)
+	if err != nil || len(events) != parallel {
+		t.Fatalf("concurrent invariant: expected %d events, got %d (err=%v)", parallel, len(events), err)
 	}
 }
 
@@ -168,11 +155,8 @@ func TestHookInvariant_ConcurrentFiresDoNotRace(t *testing.T) {
 // wire contract with the ghostty input pipe. Without the newline the receiver
 // sees the text queued in the prompt buffer but never submitted.
 func TestHookInvariant_CallbackPayloadEndsWithNewline(t *testing.T) {
+	useNotificationTestHome(t)
 	d := New()
-	callerW := NewWatcher("caller", "p", "f", 1, "", nil)
-	d.mu.Lock()
-	d.watchers["caller"] = callerW
-	d.mu.Unlock()
 
 	d.AddIdleHook(IdleHook{
 		Type:            "callback",
@@ -180,23 +164,10 @@ func TestHookInvariant_CallbackPayloadEndsWithNewline(t *testing.T) {
 		CallbackSession: "caller",
 	})
 
-	var got int32
-	var payloads []string
-	var pmu sync.Mutex
-	stop := drainCaller(callerW, &got, &payloads, &pmu)
-	defer stop()
-
 	d.executeStatusHooks(newIdleNotification("target"))
 	time.Sleep(100 * time.Millisecond)
-
-	pmu.Lock()
-	defer pmu.Unlock()
-	if len(payloads) == 0 {
-		t.Fatal("no callback payload captured")
-	}
-	for _, p := range payloads {
-		if !strings.HasSuffix(p, "\n") {
-			t.Fatalf("newline contract violated: payload %q must end with \\n", p)
-		}
+	events, err := ReadNotificationEvents(1)
+	if err != nil || len(events) != 1 || events[0].Session != "target" {
+		t.Fatalf("notification was not persisted outside the terminal input: events=%+v err=%v", events, err)
 	}
 }

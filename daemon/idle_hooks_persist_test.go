@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -115,10 +114,6 @@ func TestExecuteStatusHooks_OneTimeFiresAndDeletesFile(t *testing.T) {
 	home := withIdleHooksHome(t)
 
 	d := New()
-	callerW := NewWatcher("caller", "p", "f", 1, "", nil)
-	d.mu.Lock()
-	d.watchers["caller"] = callerW
-	d.mu.Unlock()
 
 	d.AddIdleHook(IdleHook{
 		Type:            "callback",
@@ -137,15 +132,12 @@ func TestExecuteStatusHooks_OneTimeFiresAndDeletesFile(t *testing.T) {
 		t.Fatalf("setup: sidecar must exist before fire, err=%v", err)
 	}
 
-	var got int32
-	stop := drainCaller(callerW, &got, nil, nil)
-	defer stop()
-
 	d.executeStatusHooks(newIdleNotification("target"))
-	time.Sleep(150 * time.Millisecond) // let the goroutine + cleanup land
+	time.Sleep(150 * time.Millisecond) // let the event write + cleanup land
 
-	if atomic.LoadInt32(&got) != 1 {
-		t.Errorf("expected 1 callback fire, got %d", got)
+	events, err := ReadNotificationEvents(20)
+	if err != nil || len(events) != 1 {
+		t.Errorf("expected one persisted callback event, got %d (err=%v)", len(events), err)
 	}
 	if hooks := d.ListIdleHooks(); len(hooks) != 0 {
 		t.Errorf("in-memory hook not pruned: %d remain", len(hooks))

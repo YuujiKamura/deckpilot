@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -26,6 +27,15 @@ type LaunchArgs struct {
 	Cwd          string
 	NoMetaPrompt bool
 	SharedCwd    bool
+}
+
+type readyWaitDiagnostics struct {
+	Samples        int
+	ChangedSamples int
+	SawPromptLike  bool
+	LastStatus     string
+	LastBuffer     string
+	LastShowError  string
 }
 
 // ParseLaunchArgs is the args parser carved out of Launch so tests can
@@ -93,6 +103,9 @@ func LaunchWithError(args []string) error {
 			names = append(names, k)
 		}
 		return fmt.Errorf("unknown agent: %s (available: %s)", agentName, strings.Join(names, ", "))
+	}
+	if err := checkAgentCLI(agent); err != nil {
+		return fmt.Errorf("agent CLI check: %w", err)
 	}
 
 	cwd := parsed.Cwd
@@ -187,9 +200,14 @@ func LaunchWithError(args []string) error {
 	fmt.Fprintf(os.Stderr, "sent launch: %s %s\n", agent.Cmd, strings.Join(agent.Args, " "))
 
 	// Wait for trust or ready
-	err = waitForReady(sessionName, agent, 60*time.Second)
+	diagnostics, waitErr := waitForReady(sessionName, agent, 60*time.Second)
+	err = waitErr
 	if err != nil {
-		return fmt.Errorf("ready wait: %w (leaving Ghostty for debugging)", err)
+		path, saveErr := writeLaunchFailure(sessionName, err, diagnostics)
+		if saveErr != nil {
+			return fmt.Errorf("ready wait: %w (window left open; saving failure buffer failed: %v)", err, saveErr)
+		}
+		return fmt.Errorf("ready wait: %w (window left open; buffer saved: %s)", err, path)
 	}
 	fmt.Fprintf(os.Stderr, "ready: %s\n", agentName)
 
@@ -203,6 +221,30 @@ func LaunchWithError(args []string) error {
 	// Print session name to stdout for scripting
 	fmt.Println(sessionName)
 	return nil
+}
+
+func checkAgentCLI(agent AgentDef) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	parts := append(append([]string(nil), agent.Args...), "--help")
+	command := "& " + quotePowerShellArg(agent.Cmd)
+	for _, arg := range parts {
+		command += " " + quotePowerShellArg(arg)
+	}
+	command += "; if ($null -eq $LASTEXITCODE) { exit 1 }; exit $LASTEXITCODE"
+	cmd := exec.CommandContext(ctx, "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("%s help timed out after 8s", agent.Cmd)
+		}
+		return fmt.Errorf("%s rejected configured launch arguments: %w: %s", agent.Cmd, err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func quotePowerShellArg(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
 }
 
 func quoteShellArgs(args []string) string {
@@ -340,20 +382,42 @@ func waitForNewSession(known []string, timeout time.Duration) (string, error) {
 	return "", fmt.Errorf("no new session detected within %v", timeout)
 }
 
-func waitForReady(session string, agent AgentDef, timeout time.Duration) error {
+func waitForReady(session string, agent AgentDef, timeout time.Duration) (readyWaitDiagnostics, error) {
 	caller := strconv.Itoa(os.Getppid())
 	deadline := time.Now().Add(timeout)
 	trustAccepted := false
 	trustMoveCount := 0
 	trustMoveChecks := 0
 	trustDismissChecks := 0
+	diagnostics := readyWaitDiagnostics{}
+	previousHash := ""
+	commandPromptSamples := 0
 
 	for time.Now().Before(deadline) {
 		time.Sleep(1 * time.Second)
 
-		output, _, err := daemon.DaemonShow(session, "buffer", caller)
+		output, status, err := daemon.DaemonShow(session, "buffer", caller)
 		if err != nil {
+			diagnostics.LastShowError = err.Error()
 			continue
+		}
+		diagnostics.LastShowError = ""
+		diagnostics.Samples++
+		diagnostics.LastBuffer = output
+		diagnostics.LastStatus = status
+		diagnostics.SawPromptLike = diagnostics.SawPromptLike || containsPromptLikeLine(output)
+		hash := daemon.BufHash(output)
+		if previousHash != "" && hash != previousHash {
+			diagnostics.ChangedSamples++
+		}
+		previousHash = hash
+		if looksLikeCommandPrompt(output) {
+			commandPromptSamples++
+			if commandPromptSamples >= 3 {
+				return diagnostics, fmt.Errorf("agent exited (command prompt returned before ready)")
+			}
+		} else {
+			commandPromptSamples = 0
 		}
 
 		// Handle trust confirmation. Detect fuzzily by the dialog's stable
@@ -366,14 +430,14 @@ func waitForReady(session string, agent AgentDef, timeout time.Duration) error {
 			if trustAccepted {
 				trustDismissChecks++
 				if trustDismissChecks >= 5 {
-					return fmt.Errorf("trust confirmation was sent once but the dialog did not close; session left open for inspection")
+					return diagnostics, fmt.Errorf("trust confirmation was sent once but the dialog did not close; session left open for inspection")
 				}
 				continue // wait for the one confirmation to dismiss; never repeat Enter
 			}
 			key, ready := trustDialogKey(output)
 			if key != "" && trustMoveCount < 1 {
 				if err := daemon.DaemonSendRaw(session, []byte(key)); err != nil {
-					return fmt.Errorf("trust dialog navigation failed: %w", err)
+					return diagnostics, fmt.Errorf("trust dialog navigation failed: %w", err)
 				}
 				trustMoveCount++
 				continue
@@ -383,19 +447,19 @@ func waitForReady(session string, agent AgentDef, timeout time.Duration) error {
 				if trustMoveChecks < 5 {
 					continue // allow the TUI to redraw; never repeat the navigation key
 				}
-				return fmt.Errorf("trust option did not become selected after navigation; session left open for inspection")
+				return diagnostics, fmt.Errorf("trust option did not become selected after navigation; session left open for inspection")
 			}
 			if ready {
 				if _, err := daemon.DaemonSend(session, "", caller); err != nil {
-					return fmt.Errorf("trust confirmation failed: %w", err)
+					return diagnostics, fmt.Errorf("trust confirmation failed: %w", err)
 				}
 				trustAccepted = true
 				continue
 			}
-			return fmt.Errorf("trust dialog found but cannot identify a selected trust option; leaving session open")
+			return diagnostics, fmt.Errorf("trust dialog found but cannot identify a selected trust option; leaving session open")
 		}
 		if trustAccepted && looksLikeCommandPrompt(output) {
-			return fmt.Errorf("Claude exited after trust confirmation and returned to the command prompt; session left open for inspection")
+			return diagnostics, fmt.Errorf("Claude exited after trust confirmation and returned to the command prompt; session left open for inspection")
 		}
 		if trustAccepted {
 			trustDismissChecks = 0
@@ -406,16 +470,64 @@ func waitForReady(session string, agent AgentDef, timeout time.Duration) error {
 		// blink, status bar) which prevents the watcher from ever settling
 		// to "idle" reliably within the timeout window.
 		if strings.Contains(output, agent.ReadyStr) {
-			return nil
+			return diagnostics, nil
 		}
 	}
 
-	return fmt.Errorf("agent did not become ready within %v", timeout)
+	return diagnostics, fmt.Errorf("agent did not become ready within %v", timeout)
 }
 
-var commandPromptLine = regexp.MustCompile(`(?m)^\s*[A-Za-z]:\\[^\r\n]*>\s*$`)
+var commandPromptLine = regexp.MustCompile(`^\s*[A-Za-z]:\\[^\r\n]*>\s*$`)
 
-func looksLikeCommandPrompt(buf string) bool { return commandPromptLine.MatchString(buf) }
+func looksLikeCommandPrompt(buf string) bool {
+	lines := strings.Split(buf, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		return commandPromptLine.MatchString(line)
+	}
+	return false
+}
+
+func containsPromptLikeLine(buf string) bool {
+	for _, line := range strings.Split(buf, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "❯" || line == "›" || line == ">" || line == "$" || line == "%" {
+			return true
+		}
+	}
+	return false
+}
+
+func writeLaunchFailure(session string, cause error, diagnostics readyWaitDiagnostics) (string, error) {
+	if diagnostics.LastBuffer == "" {
+		buffer, status, err := daemon.DaemonShow(session, "buffer", strconv.Itoa(os.Getppid()))
+		if err != nil {
+			diagnostics.LastShowError = err.Error()
+		} else {
+			diagnostics.LastBuffer = buffer
+			diagnostics.LastStatus = status
+		}
+	}
+	if err := os.MkdirAll(launchFailDir(), 0o700); err != nil {
+		return "", err
+	}
+	name := fmt.Sprintf("%s-%s.txt", sanitizeFilename(session), deckpilotNow().Format("20060102T150405.000000000"))
+	path := filepath.Join(launchFailDir(), name)
+	var body strings.Builder
+	fmt.Fprintf(&body, "session: %s\nreason: %v\nsamples: %d\nchanged_samples: %d\nprompt_like_seen: %t\nlast_status: %s\nlast_show_error: %s\n\n--- last buffer ---\n",
+		session, cause, diagnostics.Samples, diagnostics.ChangedSamples, diagnostics.SawPromptLike, diagnostics.LastStatus, diagnostics.LastShowError)
+	body.WriteString(diagnostics.LastBuffer)
+	if !strings.HasSuffix(diagnostics.LastBuffer, "\n") {
+		body.WriteByte('\n')
+	}
+	if err := os.WriteFile(path, []byte(body.String()), 0o600); err != nil {
+		return "", err
+	}
+	return path, nil
+}
 
 // trustDialogKey chooses only from an explicitly rendered selection. A
 // positive choice is confirmed only after the buffer shows it selected.

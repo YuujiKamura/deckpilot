@@ -50,6 +50,8 @@ func main() {
 		cmd.Send(os.Args[2:])
 	case "list", "ls":
 		cmd.List(os.Args[2:])
+	case "prune":
+		cmd.Prune(os.Args[2:])
 	case "show":
 		cmd.Show(os.Args[2:])
 	case "launch":
@@ -76,9 +78,10 @@ func main() {
 		fmt.Print(`Usage: deckpilot <command> [args]
 
 Commands:
-  send             <session> <message...>         Send message to a session
+  send             <session> <message...>         Send and report accepted / queued / no-effect
   show             [session] [--tail N] [--history] [--follow]  Get session buffer (detail, view-only; for approval use auto-approvals)
   list                                            List active sessions (alias: ls)
+  prune            <dead-session>                 Remove tracking for a dead session (does not kill Ghostty)
   launch           <agent> <prompt...> [--cwd D]  Start agent in new Ghostty window
   watch            [session] [--once] [--json]    Monitor sessions (view-only, no approval)
   hang-detect      <session> [--cpu-threshold N]  External non-destructive hang monitor (run alongside daemon)
@@ -87,9 +90,9 @@ Commands:
                    [--include-children|--no-include-children] [--once]
   auto-approvals   <session> [--interval 2s]      Auto-approve prompts (alias: approve)
                    [--dry-run] [--verbose]
-  notify           add|remove|list <args>         Manage idle notification hooks
+  notify           add|remove|list|inbox <args>   Manage hooks and read notifications
   wait-idle        <session> [--timeout=D]        Block until session becomes idle (for bg-task push notify)
-                   [--poll=D]
+                   [--poll=D] [--tail N]
   cleanup          [--days N] [--dry-run]         Remove hang dumps older than N days (default 3)
                    [--worktrees]                  + GC dead launch-meta; --worktrees also sweeps orphan worktrees
   conduct          --file PATH [--agent NAME]     Watch a markdown checklist file and auto-launch
@@ -99,7 +102,7 @@ Commands:
 Run 'deckpilot help' for this message.
 `)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\n\nAvailable commands: send, show, list, ls, launch, watch, hang-detect, auto-approvals, approve, notify, wait-idle, cleanup, conduct, shutdown\nRun 'deckpilot help' for usage.\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n\nAvailable commands: send, show, list, ls, prune, launch, watch, hang-detect, auto-approvals, approve, notify, wait-idle, cleanup, conduct, shutdown\nRun 'deckpilot help' for usage.\n", os.Args[1])
 		os.Exit(1)
 	}
 }

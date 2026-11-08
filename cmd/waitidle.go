@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/YuujiKamura/deckpilot/daemon"
@@ -27,6 +29,7 @@ func WaitIdle(args []string) {
 
 	timeout := 10 * time.Minute
 	poll := 500 * time.Millisecond
+	tail := 0
 	for i := 1; i < len(args); i++ {
 		a := args[i]
 		switch {
@@ -60,6 +63,24 @@ func WaitIdle(args []string) {
 				os.Exit(1)
 			}
 			poll = d
+		case a == "--tail" && i+1 < len(args):
+			n, err := strconv.Atoi(args[i+1])
+			if err != nil || n <= 0 {
+				fmt.Fprintf(os.Stderr, "wait-idle: --tail must be a positive integer\n")
+				os.Exit(1)
+			}
+			tail = n
+			i++
+		case a == "--tail":
+			fmt.Fprintln(os.Stderr, "wait-idle: --tail requires a positive integer")
+			os.Exit(1)
+		case strings.HasPrefix(a, "--tail="):
+			n, err := strconv.Atoi(strings.TrimPrefix(a, "--tail="))
+			if err != nil || n <= 0 {
+				fmt.Fprintf(os.Stderr, "wait-idle: --tail must be a positive integer\n")
+				os.Exit(1)
+			}
+			tail = n
 		default:
 			fmt.Fprintf(os.Stderr, "wait-idle: unknown arg: %s\n", a)
 			os.Exit(1)
@@ -83,6 +104,17 @@ func WaitIdle(args []string) {
 			sawSession = true
 			if status == "idle" || status == "stalled" {
 				fmt.Printf("%s: %s\n", name, status)
+				if tail > 0 {
+					content, _, err := daemon.DaemonShow(name, "buffer", "")
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "wait-idle: could not read terminal tail: %v\n", err)
+					} else {
+						fmt.Printf("--- last %d lines ---\n", tail)
+						if content != "" {
+							fmt.Println(lastLines(content, tail))
+						}
+					}
+				}
 				return
 			}
 		} else if sawSession {
@@ -101,6 +133,17 @@ func WaitIdle(args []string) {
 		}
 		time.Sleep(poll)
 	}
+}
+
+func lastLines(text string, count int) string {
+	if text == "" {
+		return ""
+	}
+	lines := strings.Split(strings.TrimRight(text, "\r\n"), "\n")
+	if len(lines) > count {
+		lines = lines[len(lines)-count:]
+	}
+	return strings.Join(lines, "\n")
 }
 
 func lookupStatus(name string) (string, bool, error) {

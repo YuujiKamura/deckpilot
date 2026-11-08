@@ -311,11 +311,20 @@ func (d *Daemon) listSessions() []sessionInfo {
 		status := "unknown"
 		uptime := ""
 		pid := 0
+		deadReason := ""
+		lastOutput := ""
 		if w, ok := d.watchers[name]; ok {
 			status = w.Status()
 			p := w.Profile()
 			uptime = formatUptime(time.Since(p.CreatedAt))
 			pid = p.PID
+			if status == "dead" {
+				deadReason = p.LastError
+				if deadReason == "" {
+					deadReason = "session watcher stopped receiving a valid terminal response"
+				}
+				lastOutput = tailLines(p.LastContent, 3)
+			}
 		}
 		result = append(result, sessionInfo{
 			Name:       name,
@@ -325,6 +334,8 @@ func (d *Daemon) listSessions() []sessionInfo {
 			AppRuntime: d.appRuntimes[name],
 			Status:     status,
 			Uptime:     uptime,
+			DeadReason: deadReason,
+			LastOutput: lastOutput,
 		})
 	}
 	return result
@@ -374,7 +385,7 @@ func (d *Daemon) refreshSessions() {
 	// 3. Identify dead sessions to attempt revival
 	var toRevive []string
 	for name, w := range d.watchers {
-		if w.Status() == "dead" {
+		if w.Status() == "dead" && w.Profile().LastError != "agent exited and returned to the command prompt" {
 			toRevive = append(toRevive, name)
 		}
 	}
@@ -667,31 +678,12 @@ func (d *Daemon) executeCallbackHook(hook IdleHook, notification BufferNotificat
 	if callbackSession == "" {
 		return fmt.Errorf("callback hook missing callback_session")
 	}
-
-	prefix := "[NOTIFY]"
-	verb := "idle"
-	if notification.Status == "stalled" {
-		prefix = "[STALLED]"
-		verb = "hung"
-	}
-
-	message := fmt.Sprintf("%s %s is %s\n", prefix, notification.SessionName, verb)
-	if hook.Message != "" {
-		message = hook.Message + "\n"
-	}
-
-	watcher, ok := d.getWatcher(callbackSession)
-	if !ok {
-		return fmt.Errorf("callback session %s not found", callbackSession)
-	}
-
-	_, err := watcher.Send(message)
-	if err != nil {
-		return fmt.Errorf("send to callback session %s error: %w", callbackSession, err)
-	}
-
-	log.Printf("daemon: idle callback sent to session %s: %s", callbackSession, message)
-	return nil
+	return appendNotificationEvent(NotificationEvent{
+		Recipient: callbackSession,
+		Session:   notification.SessionName,
+		Status:    notification.Status,
+		Message:   callbackNotificationMessage(notification, hook.Message),
+	})
 }
 
 // (removeOneTimeHooks / hookEquals removed: one-time pruning now happens

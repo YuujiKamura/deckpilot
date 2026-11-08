@@ -3,23 +3,28 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strconv"
+	"time"
 
 	"github.com/YuujiKamura/deckpilot/daemon"
 )
 
 // Notify manages idle notification hooks
 func Notify(args []string) {
-	if err := daemon.EnsureRunning(); err != nil {
-		fmt.Fprintf(os.Stderr, "daemon start error: %v\n", err)
-		os.Exit(1)
-	}
-
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "Usage: deckpilot notify <add|remove|list> [args]\n")
+		fmt.Fprintf(os.Stderr, "Usage: deckpilot notify <add|remove|list|inbox> [args]\n")
 		os.Exit(1)
 	}
 
 	subcommand := args[0]
+	if subcommand == "inbox" {
+		showNotificationInbox(args[1:])
+		return
+	}
+	if err := daemon.EnsureRunning(); err != nil {
+		fmt.Fprintf(os.Stderr, "daemon start error: %v\n", err)
+		os.Exit(1)
+	}
 	switch subcommand {
 	case "add":
 		addNotifyHook(args[1:])
@@ -28,8 +33,36 @@ func Notify(args []string) {
 	case "list":
 		listNotifyHooks()
 	default:
-		fmt.Fprintf(os.Stderr, "Unknown notify subcommand: %s\nAvailable: add, remove, list\n", subcommand)
+		fmt.Fprintf(os.Stderr, "Unknown notify subcommand: %s\nAvailable: add, remove, list, inbox\n", subcommand)
 		os.Exit(1)
+	}
+}
+
+func showNotificationInbox(args []string) {
+	limit := 20
+	if len(args) > 0 {
+		if len(args) != 2 || args[0] != "--tail" {
+			fmt.Fprintln(os.Stderr, "usage: deckpilot notify inbox [--tail N]")
+			os.Exit(1)
+		}
+		parsed, err := strconv.Atoi(args[1])
+		if err != nil || parsed <= 0 {
+			fmt.Fprintln(os.Stderr, "notify inbox: --tail must be a positive integer")
+			os.Exit(1)
+		}
+		limit = parsed
+	}
+	events, err := daemon.ReadNotificationEvents(limit)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "notify inbox: %v\n", err)
+		os.Exit(1)
+	}
+	if len(events) == 0 {
+		fmt.Println("No notifications")
+		return
+	}
+	for _, event := range events {
+		fmt.Printf("%s recipient=%s session=%s status=%s: %s\n", event.CreatedAt.Format(time.RFC3339), event.Recipient, event.Session, event.Status, event.Message)
 	}
 }
 

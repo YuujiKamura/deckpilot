@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/YuujiKamura/deckpilot/daemon"
 )
@@ -12,9 +13,15 @@ type listEntry struct {
 	Name       string `json:"name"`
 	PID        int    `json:"pid"`
 	PipePath   string `json:"pipe_path"`
+	WsURL      string `json:"ws_url,omitempty"`
 	AppRuntime string `json:"app_runtime"`
 	Status     string `json:"status"`
 	Uptime     string `json:"uptime"`
+	Agent      string `json:"agent,omitempty"`
+	Cwd        string `json:"cwd,omitempty"`
+	LaunchedAt string `json:"launched_at,omitempty"`
+	DeadReason string `json:"dead_reason,omitempty"`
+	LastOutput string `json:"last_output,omitempty"`
 }
 
 // List prints all active sessions as a table.
@@ -30,15 +37,20 @@ func List(args []string) {
 		os.Exit(1)
 	}
 
-	if len(args) > 0 && args[0] == "--json" {
-		fmt.Println(raw)
-		return
-	}
-
 	var sessions []listEntry
 	if err := json.Unmarshal([]byte(raw), &sessions); err != nil {
 		fmt.Fprintf(os.Stderr, "list: bad json: %v\n", err)
 		os.Exit(1)
+	}
+	enrichLaunchMetadata(sessions)
+	if len(args) > 0 && args[0] == "--json" {
+		encoded, err := json.Marshal(sessions)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "list: encode json: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(string(encoded))
+		return
 	}
 
 	if len(sessions) == 0 {
@@ -46,8 +58,35 @@ func List(args []string) {
 		return
 	}
 
-	fmt.Printf("%-25s %-6s %-10s %-10s %s\n", "NAME", "PID", "RUNTIME", "UPTIME", "STATUS")
+	fmt.Printf("%-25s %-6s %-10s %-10s %-10s %s\n", "NAME", "PID", "RUNTIME", "UPTIME", "STATUS", "AGENT")
 	for _, s := range sessions {
-		fmt.Printf("%-25s %-6d %-10s %-10s %s\n", s.Name, s.PID, s.AppRuntime, s.Uptime, s.Status)
+		fmt.Printf("%-25s %-6d %-10s %-10s %-10s %s\n", s.Name, s.PID, s.AppRuntime, s.Uptime, s.Status, s.Agent)
+		if s.DeadReason != "" {
+			fmt.Printf("  dead reason: %s\n", s.DeadReason)
+			if s.LastOutput != "" {
+				fmt.Printf("  last output:\n%s\n", s.LastOutput)
+			}
+		}
+		if s.Cwd != "" {
+			fmt.Printf("  cwd: %s", s.Cwd)
+			fmt.Println()
+		}
+		if s.LaunchedAt != "" {
+			fmt.Printf("  launched: %s\n", s.LaunchedAt)
+		}
+	}
+}
+
+func enrichLaunchMetadata(sessions []listEntry) {
+	for i := range sessions {
+		meta, ok, err := ReadLaunchMeta(sessions[i].Name)
+		if err != nil || !ok {
+			continue
+		}
+		sessions[i].Agent = meta.Agent
+		sessions[i].Cwd = meta.Cwd
+		if !meta.LaunchedAt.IsZero() {
+			sessions[i].LaunchedAt = meta.LaunchedAt.Format(time.RFC3339)
+		}
 	}
 }

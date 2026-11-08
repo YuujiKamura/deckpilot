@@ -38,6 +38,8 @@ func hangDumpsDir() string { return filepath.Join(deckpilotHomeDir(), "hang-dump
 // `deckpilot cleanup` sweeps under the launch-meta label.
 func launchMetaDir() string { return filepath.Join(deckpilotHomeDir(), "launch-meta") }
 
+func launchFailDir() string { return filepath.Join(deckpilotHomeDir(), "launch-fail") }
+
 // managedWorktreesDir is where `deckpilot launch` creates detached
 // per-session git worktrees for capability isolation.
 func managedWorktreesDir() string { return filepath.Join(deckpilotHomeDir(), "worktrees") }

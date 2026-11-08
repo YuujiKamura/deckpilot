@@ -53,6 +53,8 @@ func (d *Daemon) handleConn(conn net.Conn) {
 		resp = d.handleSend(parts)
 	case "SENDRAW":
 		resp = d.handleSendRaw(parts)
+	case "PRUNE":
+		resp = d.handlePrune(parts)
 	case "LIST":
 		resp = d.handleList()
 	case "SHOW":
@@ -70,6 +72,26 @@ func (d *Daemon) handleConn(conn net.Conn) {
 	}
 
 	conn.Write([]byte(resp))
+}
+
+func (d *Daemon) handlePrune(parts []string) string {
+	if len(parts) != 2 || parts[1] == "" || strings.ContainsAny(parts[1], "|\r\n") {
+		return "ERR|usage: PRUNE|<session>\n"
+	}
+	name := parts[1]
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	w, ok := d.watchers[name]
+	if !ok || w.Status() != "dead" {
+		return fmt.Sprintf("ERR|session %q is not tracked as dead\n", name)
+	}
+	delete(d.sessions, name)
+	delete(d.wsURLs, name)
+	delete(d.appRuntimes, name)
+	delete(d.watchers, name)
+	delete(d.lastNotify, name)
+	log.Printf("daemon: manually pruned dead session %q", name)
+	return fmt.Sprintf("OK|pruned|%s\n", name)
 }
 
 func (d *Daemon) handleSendRaw(parts []string) string {
@@ -158,10 +180,14 @@ func (d *Daemon) handleSend(parts []string) string {
 
 	var resumeCh chan struct{}
 	w, ok := d.getWatcher(name)
+	initialStatus := "unknown"
 	if ok {
+		initialStatus = w.Status()
 		// Revive dead watcher before pausing
 		if w.Status() == "dead" {
-			w.Revive()
+			if w.Revive() {
+				initialStatus = w.Status()
+			}
 		}
 		if w.Status() != "dead" {
 			// 2s window: if the runner is alive it picks up almost
@@ -285,13 +311,24 @@ func (d *Daemon) handleSend(parts []string) string {
 		if caller != "" && d.shouldRegisterCallback(name, caller) {
 			d.registerCallbackHook(name, caller)
 		}
-		return fmt.Sprintf("OK|submit_ok|%s|%dms\n", result.Status, result.ElapsedMs)
+		outcome := classifySendOutcome(initialStatus, result.Status)
+		return fmt.Sprintf("OK|submit_ok|%s|%s|%dms\n", outcome, result.Status, result.ElapsedMs)
 	case SubmitFailedStuck:
-		return fmt.Sprintf("ERR|submit_failed_stuck|%dms\n", result.ElapsedMs)
+		return fmt.Sprintf("ERR|no-effect|submit_failed_stuck|%dms\n", result.ElapsedMs)
 	case SubmitUnconfirmed:
 		return fmt.Sprintf("ERR|submit_unconfirmed|timeout_after_%dms\n", result.ElapsedMs)
 	}
 	return "ERR|submit_unknown\n"
+}
+
+func classifySendOutcome(initialStatus string, submit SubmitStatus) string {
+	if submit == SubmitFailedStuck {
+		return "no-effect"
+	}
+	if initialStatus == "active" {
+		return "queued"
+	}
+	return "accepted"
 }
 
 func (d *Daemon) handleList() string {
@@ -535,6 +572,23 @@ func DaemonSendRaw(name string, data []byte) error {
 	}
 	if !strings.HasPrefix(resp, "OK|") {
 		return fmt.Errorf("unexpected raw-send response: %q", resp)
+	}
+	return nil
+}
+
+func DaemonPrune(name string) error {
+	if strings.ContainsAny(name, "|\r\n") {
+		return fmt.Errorf("invalid session name for prune")
+	}
+	resp, err := dialDaemon(fmt.Sprintf("PRUNE|%s", name))
+	if err != nil {
+		return err
+	}
+	if strings.HasPrefix(resp, "ERR|") {
+		return fmt.Errorf("%s", strings.TrimPrefix(resp, "ERR|"))
+	}
+	if !strings.HasPrefix(resp, "OK|pruned|") {
+		return fmt.Errorf("unexpected prune response: %q", resp)
 	}
 	return nil
 }
