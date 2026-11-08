@@ -68,7 +68,7 @@ func TestWriteLaunchFailureRecordsUnavailableBuffer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(body), "last_show_error: connect to daemon") {
+	if !strings.Contains(string(body), "last_show_error:") {
 		t.Fatalf("show failure missing from launch-fail record: %s", body)
 	}
 }

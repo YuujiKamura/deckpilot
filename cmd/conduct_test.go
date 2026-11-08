@@ -17,10 +17,10 @@ not a checkbox
 `
 	got := ParseChecklist(src)
 	want := []ChecklistItem{
-		{LineIdx: 2, Body: "do foo", Checked: false},
-		{LineIdx: 3, Body: "already done", Checked: true},
-		{LineIdx: 4, Body: "do bar baz", Checked: false},
-		{LineIdx: 6, Body: "leading space body", Checked: false},
+		{LineIdx: 2, Body: "do foo", Mark: " "},
+		{LineIdx: 3, Body: "already done", Mark: "x"},
+		{LineIdx: 4, Body: "do bar baz", Mark: " "},
+		{LineIdx: 6, Body: "leading space body", Mark: " "},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ParseChecklist mismatch:\n got=%#v\nwant=%#v", got, want)
@@ -43,9 +43,9 @@ func TestParseChecklist_HTMLCommentsAndCodeBlocks(t *testing.T) {
 `
 	got := ParseChecklist(src)
 	want := []ChecklistItem{
-		{LineIdx: 2, Body: "do foo", Checked: false},
-		{LineIdx: 8, Body: "do bar", Checked: false},
-		{LineIdx: 12, Body: "do baz", Checked: false},
+		{LineIdx: 2, Body: "do foo", Mark: " "},
+		{LineIdx: 8, Body: "do bar", Mark: " "},
+		{LineIdx: 12, Body: "do baz", Mark: " "},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ParseChecklist HTML/Code skip mismatch:\n got=%#v\nwant=%#v", got, want)
@@ -63,9 +63,9 @@ func TestParseChecklist_EmptyAndNoMatches(t *testing.T) {
 
 func TestPickNextTodo(t *testing.T) {
 	items := []ChecklistItem{
-		{LineIdx: 1, Body: "done one", Checked: true},
-		{LineIdx: 2, Body: "todo one", Checked: false},
-		{LineIdx: 3, Body: "todo two", Checked: false},
+		{LineIdx: 1, Body: "done one", Mark: "x"},
+		{LineIdx: 2, Body: "todo one", Mark: " "},
+		{LineIdx: 3, Body: "todo two", Mark: " "},
 	}
 	got, ok := PickNextTodo(items)
 	if !ok {
@@ -78,8 +78,8 @@ func TestPickNextTodo(t *testing.T) {
 
 func TestPickNextTodo_AllDone(t *testing.T) {
 	items := []ChecklistItem{
-		{LineIdx: 1, Body: "x", Checked: true},
-		{LineIdx: 2, Body: "y", Checked: true},
+		{LineIdx: 1, Body: "x", Mark: "x"},
+		{LineIdx: 2, Body: "y", Mark: "x"},
 	}
 	if _, ok := PickNextTodo(items); ok {
 		t.Fatal("PickNextTodo: want ok=false when all checked")
