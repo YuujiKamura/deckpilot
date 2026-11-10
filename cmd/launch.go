@@ -22,12 +22,19 @@ import (
 // the calling Launch can keep its existing fmt.Fprintln error
 // reporting style.
 type LaunchArgs struct {
-	AgentName    string
-	Prompt       string
-	Cwd          string
-	NoMetaPrompt bool
-	SharedCwd    bool
+	AgentName       string
+	Prompt          string
+	Cwd             string
+	ReadyTimeout    time.Duration
+	ReadyTimeoutSet bool
+	NoMetaPrompt    bool
+	SharedCwd       bool
 }
+
+const (
+	defaultReadyTimeout = 2 * time.Minute
+	shellPromptTimeout  = 30 * time.Second
+)
 
 type readyWaitDiagnostics struct {
 	Samples        int
@@ -48,11 +55,12 @@ type readyWaitDiagnostics struct {
 // <prompt...>` minus the `launch` token).
 func ParseLaunchArgs(args []string, defaultCwd string) (LaunchArgs, string) {
 	if len(args) < 1 {
-		return LaunchArgs{}, "usage: deckpilot launch <agent> <prompt...> [--cwd DIR] [--shared-cwd] [--no-meta-prompt]"
+		return LaunchArgs{}, "usage: deckpilot launch <agent> <prompt...> [--cwd DIR] [--ready-timeout DURATION] [--shared-cwd] [--no-meta-prompt]"
 	}
 	out := LaunchArgs{
-		AgentName: args[0],
-		Cwd:       defaultCwd,
+		AgentName:    args[0],
+		Cwd:          defaultCwd,
+		ReadyTimeout: defaultReadyTimeout,
 	}
 	var promptParts []string
 	for i := 1; i < len(args); i++ {
@@ -62,6 +70,17 @@ func ParseLaunchArgs(args []string, defaultCwd string) (LaunchArgs, string) {
 				return LaunchArgs{}, "--cwd requires a value"
 			}
 			out.Cwd = args[i+1]
+			i++
+		case "--ready-timeout":
+			if i+1 >= len(args) {
+				return LaunchArgs{}, "--ready-timeout requires a duration (for example 2m)"
+			}
+			d, err := time.ParseDuration(args[i+1])
+			if err != nil || d <= 0 {
+				return LaunchArgs{}, "--ready-timeout must be a positive duration (for example 2m)"
+			}
+			out.ReadyTimeout = d
+			out.ReadyTimeoutSet = true
 			i++
 		case "--no-meta-prompt":
 			out.NoMetaPrompt = true
@@ -73,7 +92,7 @@ func ParseLaunchArgs(args []string, defaultCwd string) (LaunchArgs, string) {
 	}
 	out.Prompt = strings.Join(promptParts, " ")
 	if out.Prompt == "" {
-		return LaunchArgs{}, "usage: deckpilot launch <agent> <prompt...> [--cwd DIR] [--shared-cwd] [--no-meta-prompt]"
+		return LaunchArgs{}, "usage: deckpilot launch <agent> <prompt...> [--cwd DIR] [--ready-timeout DURATION] [--shared-cwd] [--no-meta-prompt]"
 	}
 	return out, ""
 }
@@ -93,6 +112,15 @@ func LaunchWithError(args []string) error {
 	parsed, errMsg := ParseLaunchArgs(args, cwdDefault)
 	if errMsg != "" {
 		return fmt.Errorf("%s", errMsg)
+	}
+	if !parsed.ReadyTimeoutSet {
+		if value := os.Getenv("DECKPILOT_READY_TIMEOUT"); value != "" {
+			d, parseErr := time.ParseDuration(value)
+			if parseErr != nil || d <= 0 {
+				return fmt.Errorf("DECKPILOT_READY_TIMEOUT must be a positive duration (for example 2m)")
+			}
+			parsed.ReadyTimeout = d
+		}
 	}
 
 	agentName := parsed.AgentName
@@ -117,7 +145,10 @@ func LaunchWithError(args []string) error {
 	}
 
 	// Snapshot current sessions
-	knownSessions := listSessionNames()
+	knownSessions, err := listSessionNames()
+	if err != nil {
+		return fmt.Errorf("session snapshot: %w", err)
+	}
 
 	// Find and launch Ghostty
 	ghosttyExe := FindGhostty()
@@ -167,6 +198,12 @@ func LaunchWithError(args []string) error {
 		return fmt.Errorf("session detect: %w", err)
 	}
 	fmt.Fprintf(os.Stderr, "session: %s\n", sessionName)
+	launchSucceeded := false
+	defer func() {
+		if !launchSucceeded {
+			killLaunchedGhostty(sessionName, knownSessions, ghosttyExe)
+		}
+	}()
 
 	// Persist launch metadata so the hang-detect snapshot action can
 	// emit an exact `deckpilot launch ... --cwd ...` resume command if
@@ -182,8 +219,15 @@ func LaunchWithError(args []string) error {
 		fmt.Fprintf(os.Stderr, "launch-meta: %v (continuing)\n", metaErr)
 	}
 
-	// Wait for shell prompt (give the terminal a moment to render)
-	time.Sleep(2 * time.Second)
+	// Wait for cmd.exe to render its prompt. A fixed delay races slow
+	// Ghostty startup and can lose the first command's Enter.
+	if diagnostics, waitErr := waitForShellPrompt(sessionName, shellPromptTimeout); waitErr != nil {
+		path, saveErr := writeLaunchFailure(sessionName, waitErr, diagnostics)
+		if saveErr != nil {
+			return fmt.Errorf("shell wait: %w (saving failure buffer failed: %v)", waitErr, saveErr)
+		}
+		return fmt.Errorf("shell wait: %w (buffer saved: %s)", waitErr, path)
+	}
 
 	// Send cd + agent launch command.
 	// Use cmd /k so that the shell does not exit when the agent exits autonomously,
@@ -195,28 +239,38 @@ func LaunchWithError(args []string) error {
 	caller := strconv.Itoa(os.Getppid())
 	_, err = daemonSendWithRetry(sessionName, launchCmd, caller, 3, 2*time.Second)
 	if err != nil {
-		return fmt.Errorf("send launch cmd: %w", err)
+		diagnostics, _ := captureLaunchDiagnostics(sessionName)
+		path, saveErr := writeLaunchFailure(sessionName, err, diagnostics)
+		if saveErr != nil {
+			return fmt.Errorf("send launch cmd: %w (saving failure buffer failed: %v)", err, saveErr)
+		}
+		return fmt.Errorf("send launch cmd: %w (buffer saved: %s)", err, path)
 	}
 	fmt.Fprintf(os.Stderr, "sent launch: %s %s\n", agent.Cmd, strings.Join(agent.Args, " "))
 
 	// Wait for trust or ready
-	diagnostics, waitErr := waitForReady(sessionName, agent, 60*time.Second)
+	diagnostics, waitErr := waitForReady(sessionName, agent, parsed.ReadyTimeout)
 	err = waitErr
 	if err != nil {
 		path, saveErr := writeLaunchFailure(sessionName, err, diagnostics)
 		if saveErr != nil {
-			return fmt.Errorf("ready wait: %w (window left open; saving failure buffer failed: %v)", err, saveErr)
+			return fmt.Errorf("ready wait: %w (saving failure buffer failed: %v)", err, saveErr)
 		}
-		return fmt.Errorf("ready wait: %w (window left open; buffer saved: %s)", err, path)
+		return fmt.Errorf("ready wait: %w (buffer saved: %s)", err, path)
 	}
 	fmt.Fprintf(os.Stderr, "ready: %s\n", agentName)
 
 	// Send prompt
 	result, err := daemonSendWithRetry(sessionName, prompt, caller, 3, 2*time.Second)
 	if err != nil {
-		return fmt.Errorf("send: %w", err)
+		path, saveErr := writeLaunchFailure(sessionName, err, diagnostics)
+		if saveErr != nil {
+			return fmt.Errorf("send: %w (saving failure buffer failed: %v)", err, saveErr)
+		}
+		return fmt.Errorf("send: %w (buffer saved: %s)", err, path)
 	}
 	fmt.Fprintf(os.Stderr, "sent: %s\n", result)
+	launchSucceeded = true
 
 	// Print session name to stdout for scripting
 	fmt.Println(sessionName)
@@ -345,22 +399,32 @@ func FindGhostty() string {
 	return ""
 }
 
-func listSessionNames() []string {
+func listSessionNames() ([]string, error) {
 	raw, err := daemon.DaemonList()
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	var sessions []struct {
 		Name string `json:"name"`
 	}
 	if err := json.Unmarshal([]byte(raw), &sessions); err != nil {
-		return nil
+		return nil, fmt.Errorf("decode session list: %w", err)
 	}
 	names := make([]string, len(sessions))
 	for i, s := range sessions {
 		names[i] = s.Name
 	}
-	return names
+	return names, nil
+}
+
+func newSessionNames(known map[string]bool, current []string) []string {
+	var added []string
+	for _, name := range current {
+		if !known[name] {
+			added = append(added, name)
+		}
+	}
+	return added
 }
 
 func waitForNewSession(known []string, timeout time.Duration) (string, error) {
@@ -370,16 +434,116 @@ func waitForNewSession(known []string, timeout time.Duration) (string, error) {
 	}
 
 	deadline := time.Now().Add(timeout)
+	var lastErr error
 	for time.Now().Before(deadline) {
 		time.Sleep(500 * time.Millisecond)
-		current := listSessionNames()
-		for _, name := range current {
-			if !knownSet[name] {
-				return name, nil
-			}
+		current, err := listSessionNames()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		added := newSessionNames(knownSet, current)
+		if len(added) > 1 {
+			return "", fmt.Errorf("multiple new sessions detected; refusing ambiguous launch ownership: %s", strings.Join(added, ", "))
+		}
+		if len(added) == 1 {
+			return added[0], nil
 		}
 	}
+	if lastErr != nil {
+		return "", fmt.Errorf("no new session detected within %v; last list error: %w", timeout, lastErr)
+	}
 	return "", fmt.Errorf("no new session detected within %v", timeout)
+}
+
+func captureLaunchDiagnostics(session string) (readyWaitDiagnostics, error) {
+	output, status, err := daemon.DaemonShow(session, "buffer", strconv.Itoa(os.Getppid()))
+	diagnostics := readyWaitDiagnostics{}
+	if err != nil {
+		diagnostics.LastShowError = err.Error()
+		return diagnostics, err
+	}
+	diagnostics.LastBuffer = output
+	diagnostics.LastStatus = status
+	diagnostics.SawPromptLike = containsPromptLikeLine(output)
+	diagnostics.Samples = 1
+	return diagnostics, nil
+}
+
+func waitForShellPrompt(session string, timeout time.Duration) (readyWaitDiagnostics, error) {
+	caller := strconv.Itoa(os.Getppid())
+	deadline := time.Now().Add(timeout)
+	diagnostics := readyWaitDiagnostics{}
+	for time.Now().Before(deadline) {
+		time.Sleep(250 * time.Millisecond)
+		output, status, err := daemon.DaemonShow(session, "buffer", caller)
+		if err != nil {
+			diagnostics.LastShowError = err.Error()
+			continue
+		}
+		diagnostics.LastShowError = ""
+		diagnostics.Samples++
+		diagnostics.LastBuffer = output
+		diagnostics.LastStatus = status
+		diagnostics.SawPromptLike = diagnostics.SawPromptLike || containsPromptLikeLine(output)
+		if looksLikeCommandPrompt(output) {
+			return diagnostics, nil
+		}
+	}
+	return diagnostics, fmt.Errorf("shell command prompt did not appear within %v", timeout)
+}
+
+// killLaunchedGhostty terminates only the newly detected Ghostty session PID
+// after matching the daemon's name/PID pair and verifying the executable path.
+// explorer.exe's PID is not the Ghostty PID, so it must never be killed here.
+func killLaunchedGhostty(session string, known []string, ghosttyExe string) {
+	entries, err := readSessionEntries()
+	if err != nil {
+		return
+	}
+	pid, ok := ownedGhosttyPID(session, known, entries)
+	if !ok {
+		return
+	}
+	pidText := strconv.Itoa(pid)
+	command := "$p=Get-CimInstance Win32_Process -Filter 'ProcessId = " + pidText + "'; if ($p -and [IO.Path]::GetFullPath($p.ExecutablePath) -ieq [IO.Path]::GetFullPath(" + quotePowerShellArg(ghosttyExe) + ")) { Stop-Process -Id " + pidText + " -Force }"
+	cmd := exec.Command("powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "launch cleanup: could not terminate owned Ghostty session %s: %v: %s\n", session, err, strings.TrimSpace(string(output)))
+	}
+}
+
+func ownedGhosttyPID(session string, known []string, entries []listEntry) (int, bool) {
+	if session == "" || !strings.HasPrefix(session, "ghostty-") {
+		return 0, false
+	}
+	for _, name := range known {
+		if name == session {
+			return 0, false
+		}
+	}
+	pid, err := strconv.Atoi(strings.TrimPrefix(session, "ghostty-"))
+	if err != nil || pid <= 0 {
+		return 0, false
+	}
+	for _, entry := range entries {
+		if entry.Name == session && entry.PID == pid {
+			return pid, true
+		}
+	}
+	return 0, false
+}
+
+func readSessionEntries() ([]listEntry, error) {
+	raw, err := daemon.DaemonList()
+	if err != nil {
+		return nil, err
+	}
+	var entries []listEntry
+	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
+		return nil, err
+	}
+	return entries, nil
 }
 
 func waitForReady(session string, agent AgentDef, timeout time.Duration) (readyWaitDiagnostics, error) {

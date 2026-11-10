@@ -340,6 +340,21 @@ func IsProcessAlive(pid int) bool {
 	return true
 }
 
+// IsProcessDefinitelyGone is true only when Windows confirms the PID is invalid.
+// Access-denied and other query failures are treated as unknown, not as exit.
+func IsProcessDefinitelyGone(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	const processQueryLimitedInformation = 0x1000
+	h, err := syscall.OpenProcess(processQueryLimitedInformation, false, uint32(pid))
+	if err == nil {
+		_ = syscall.CloseHandle(h)
+		return false
+	}
+	return err == syscall.Errno(87) // ERROR_INVALID_PARAMETER: no process has this PID.
+}
+
 // PingWS sends a PING command over WebSocket and expects a PONG response.
 func PingWS(wsURL string) error {
 	dialer := websocket.Dialer{

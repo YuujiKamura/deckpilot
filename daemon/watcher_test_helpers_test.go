@@ -14,5 +14,6 @@ func newWatcherForTest(name string, fc pipeClient) *Watcher {
 		reqCh:      make(chan pipeRequest, 16),
 		pauseCh:    make(chan chan struct{}),
 		client:     fc,
+		stopCh:     make(chan struct{}),
 	}
 }

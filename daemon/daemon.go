@@ -359,21 +359,23 @@ func formatUptime(d time.Duration) string {
 func (d *Daemon) refreshSessions() {
 	d.mu.Lock()
 
-	// 1. Identify sessions to prune (status="dead" and process gone)
+	// 1. Prune any session whose real PID Windows confirms has exited.
+	// This also clears active/stalled entries when launch cleanup terminates
+	// the owning Ghostty before its watcher can record a dead transition.
 	var toPrune []string
 	for name, w := range d.watchers {
-		if w.Status() == "dead" {
-			p := w.Profile()
-			// Only prune if we have a real PID and it's confirmed gone.
-			// PID 0 is used for mock sessions in tests and should not be pruned.
-			if p.PID > 0 && !pipe.IsProcessAlive(p.PID) {
-				toPrune = append(toPrune, name)
-			}
+		p := w.Profile()
+		// PID 0 is used for mock sessions in tests and should not be pruned.
+		if p.PID > 0 && pipe.IsProcessDefinitelyGone(p.PID) {
+			toPrune = append(toPrune, name)
 		}
 	}
 
 	// 2. Perform pruning
 	for _, name := range toPrune {
+		if w := d.watchers[name]; w != nil {
+			w.Stop()
+		}
 		delete(d.sessions, name)
 		delete(d.wsURLs, name)
 		delete(d.appRuntimes, name)

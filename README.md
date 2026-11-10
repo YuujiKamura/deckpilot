@@ -99,19 +99,22 @@ watcher error and last three terminal lines.
 ### `launch` — Start an agent
 
 ```bash
-deckpilot launch <agent> <prompt...> [--cwd DIR] [--shared-cwd] [--no-meta-prompt]
+deckpilot launch <agent> <prompt...> [--cwd DIR] [--ready-timeout DURATION] [--shared-cwd] [--no-meta-prompt]
 ```
 
 Checks the agent CLI and configured launch flags first, then starts a Ghostty
-window, waits for the agent to be ready, and sends the prompt. On readiness
-failure it saves the last buffer and leaves the window open. Prints the session
-name to stdout on success.
+window, waits for the shell and agent to be ready, and sends the prompt. The
+ready wait defaults to two minutes. Set `--ready-timeout 3m` or
+`DECKPILOT_READY_TIMEOUT=3m` to override it; the command-line value takes
+precedence. On failure it saves the last buffer and closes the new Ghostty
+window only when its session PID and executable can be verified unambiguously.
+Prints the session name to stdout on success.
 
 | Agent  | Command                                      | Ready string |
 |--------|----------------------------------------------|--------------|
-| claude | `claude --dangerously-skip-permissions`      | `>`          |
-| sonnet | `claude --dangerously-skip-permissions --model sonnet` | `>` |
-| haiku  | `claude --dangerously-skip-permissions --model haiku`  | `>` |
+| claude | `claude --dangerously-skip-permissions`      | `bypass permissions` |
+| sonnet | `claude --dangerously-skip-permissions --model sonnet` | `bypass permissions` |
+| haiku  | `claude --dangerously-skip-permissions --model haiku`  | `bypass permissions` |
 | codex  | `codex --dangerously-bypass-approvals-and-sandbox` | `›`     |
 | gemini | `gemini`                                     | `>`          |
 
@@ -121,12 +124,12 @@ default. This keeps auto-approved sessions away from the shared dirty worktree.
 Use `--shared-cwd` only when the session must operate in the original working
 tree.
 
-If readiness times out, the last full terminal buffer and
-readiness observations are saved under `~/.deckpilot/launch-fail/`. The window
-is left open for inspection. `deckpilot list` shows agent, cwd, and launch time
-when metadata exists; dead entries show the watcher error and last three
-output lines. `deckpilot prune <session>` removes tracking only when the session
-is marked dead; it does not kill Ghostty.
+If shell or agent readiness times out, the last full terminal buffer and
+readiness observations are saved under `~/.deckpilot/launch-fail/`. A verified
+new Ghostty session is closed after saving diagnostics. `deckpilot list` shows
+agent, cwd, and launch time when metadata exists; dead entries show the watcher
+error and last three output lines. `deckpilot prune <session>` removes tracking
+only when the session is marked dead; it does not kill Ghostty.
 
 #### Prompt persistence and `--no-meta-prompt`
 

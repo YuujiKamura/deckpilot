@@ -70,6 +70,8 @@ type Watcher struct {
 	reqCh       chan pipeRequest
 	pauseCh     chan chan struct{} // send pause signal, receive resume signal
 	client      pipeClient
+	stopCh      chan struct{}
+	stopOnce    sync.Once
 }
 
 // NewWatcher creates a Watcher for the given session.
@@ -87,7 +89,17 @@ func NewWatcher(name, pipePath, sessionFile string, pid int, hwndStr string, onN
 		reqCh:       make(chan pipeRequest, 16),
 		pauseCh:     make(chan chan struct{}),
 		client:      pipe.NewClient(pipePath),
+		stopCh:      make(chan struct{}),
 	}
+}
+
+// Stop requests the watcher goroutine to close its pipe client and exit.
+func (w *Watcher) Stop() {
+	w.stopOnce.Do(func() {
+		if w.stopCh != nil {
+			close(w.stopCh)
+		}
+	})
 }
 
 // Run is the single goroutine that owns all pipe I/O for this session.
@@ -119,6 +131,9 @@ func (w *Watcher) Run(ctx context.Context) {
 
 		select {
 		case <-ctx.Done():
+			w.logProfile()
+			return
+		case <-w.stopCh:
 			w.logProfile()
 			return
 		case req := <-w.reqCh:

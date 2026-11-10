@@ -24,8 +24,7 @@ var agents = map[string]AgentDef{
 	"claude": {
 		Cmd:  "claude",
 		Args: claudeDefaultArgs(),
-		// claude TUI のフッタ。素の ">" は cmd プロンプト "C:\...>" を誤マッチして
-		// TUI 起動前に ready 誤判定する (2026-06-04 実測)。TUI 固有の文字列にする。
+		// The current Claude Code TUI shows this footer alongside its prompt box.
 		ReadyStr: "bypass permissions",
 		// claude は初回フォルダ起動で信頼ダイアログを出す
 		// (--dangerously-skip-permissions では消えない別ゲート)。非空 =
