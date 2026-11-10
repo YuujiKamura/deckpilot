@@ -41,6 +41,63 @@ func TestWriteLaunchFailureKeepsFullBufferAndReadinessEvidence(t *testing.T) {
 	}
 }
 
+func TestWriteLaunchRecordCapturesSuccessfulStages(t *testing.T) {
+	usePerceptionHome(t)
+	started := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	trace := launchTrace{
+		StartedAt: started, Session: "ghostty-456", Agent: "claude",
+		WindowStart: 120 * time.Millisecond, SessionDetect: 2 * time.Second,
+		ShellPrepare: 3 * time.Second, CommandSend: 90 * time.Millisecond,
+		ReadyWait: 4 * time.Second, PromptSend: 80 * time.Millisecond,
+		ShellReady: true, CommandSent: true, ReadyMarker: "bypass permissions",
+		ReadyMatched: true, PromptSent: true, FailureStage: "complete",
+	}
+	path, err := writeLaunchRecord(trace, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"outcome: success", "failure_stage: complete", "window_start_elapsed: 120ms",
+		"session_detect_elapsed: 2s", "shell_prepare_elapsed: 3s", "command_send_elapsed: 90ms",
+		"ready_wait_elapsed: 4s", "prompt_send_elapsed: 80ms", "ready_marker: bypass permissions",
+		"ready_matched: true", "prompt_sent: true",
+	} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("success record missing %q", want)
+		}
+	}
+	if strings.Contains(string(body), "last buffer") {
+		t.Fatal("success record should not include a failure buffer")
+	}
+}
+
+func TestWriteLaunchRecordCapturesFailureScreen(t *testing.T) {
+	usePerceptionHome(t)
+	trace := launchTrace{
+		StartedAt: time.Now(), Session: "ghostty-789", Agent: "codex",
+		FailureStage: "ready_wait", ReadyMarker: "›", Diagnostics: readyWaitDiagnostics{
+			LastBuffer: "Codex loading\n",
+		},
+	}
+	path, err := writeLaunchRecord(trace, context.DeadlineExceeded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"outcome: failure", "failure_stage: ready_wait", "ready_matched: false", "--- last buffer ---\nCodex loading"} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("failure record missing %q", want)
+		}
+	}
+}
+
 func TestEnrichLaunchMetadata(t *testing.T) {
 	usePerceptionHome(t)
 	at := time.Date(2026, 11, 8, 12, 30, 0, 0, time.UTC)

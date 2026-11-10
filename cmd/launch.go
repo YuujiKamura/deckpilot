@@ -40,9 +40,29 @@ type readyWaitDiagnostics struct {
 	Samples        int
 	ChangedSamples int
 	SawPromptLike  bool
+	ReadyMatched   bool
 	LastStatus     string
 	LastBuffer     string
 	LastShowError  string
+}
+
+type launchTrace struct {
+	StartedAt     time.Time
+	Session       string
+	Agent         string
+	WindowStart   time.Duration
+	SessionDetect time.Duration
+	ShellPrepare  time.Duration
+	CommandSend   time.Duration
+	ReadyWait     time.Duration
+	PromptSend    time.Duration
+	ShellReady    bool
+	CommandSent   bool
+	ReadyMatched  bool
+	ReadyMarker   string
+	PromptSent    bool
+	FailureStage  string
+	Diagnostics   readyWaitDiagnostics
 }
 
 // ParseLaunchArgs is the args parser carved out of Launch so tests can
@@ -107,7 +127,7 @@ func Launch(args []string) {
 	}
 }
 
-func LaunchWithError(args []string) error {
+func LaunchWithError(args []string) (retErr error) {
 	cwdDefault, _ := os.Getwd()
 	parsed, errMsg := ParseLaunchArgs(args, cwdDefault)
 	if errMsg != "" {
@@ -174,6 +194,8 @@ func LaunchWithError(args []string) error {
 	// fails if the current job object has strict limits (e.g. from antigravity-cli).
 	// explorer.exe delegates the launch to the main Explorer process (DCOM),
 	// completely escaping the job object.
+	trace := launchTrace{StartedAt: deckpilotNow(), Agent: agentName, ReadyMarker: agent.ReadyStr}
+	stageStarted := time.Now()
 	cmd := exec.Command("explorer.exe", ghosttyExe)
 	cmd.Dir = cwd
 	cmd.Stdin = nil
@@ -183,8 +205,16 @@ func LaunchWithError(args []string) error {
 		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP | 0x00000008, // DETACHED_PROCESS = 0x00000008
 	}
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("launch ghostty: %w", err)
+		trace.WindowStart = time.Since(stageStarted)
+		trace.FailureStage = "window_start"
+		if path, saveErr := writeLaunchRecord(trace, err); saveErr != nil {
+			return fmt.Errorf("launch ghostty: %w (saving launch record failed: %v)", err, saveErr)
+		} else {
+			return fmt.Errorf("launch ghostty: %w (launch record: %s)", err, path)
+		}
 	}
+	trace.WindowStart = time.Since(stageStarted)
+
 	// Once started, completely detach. Do not Wait(), do not keep handles.
 	// The daemon will pick up the session via file scanning.
 	if cmd.Process != nil {
@@ -193,15 +223,38 @@ func LaunchWithError(args []string) error {
 	fmt.Fprintf(os.Stderr, "launched: %s\n", ghosttyExe)
 
 	// Wait for new session to appear
+	trace.FailureStage = "session_detect"
+	stageStarted = time.Now()
 	sessionName, err := waitForNewSession(knownSessions, 15*time.Second)
+	trace.SessionDetect = time.Since(stageStarted)
 	if err != nil {
-		return fmt.Errorf("session detect: %w", err)
+		trace.FailureStage = "session_detect"
+		if path, saveErr := writeLaunchRecord(trace, err); saveErr != nil {
+			return fmt.Errorf("session detect: %w (saving launch record failed: %v)", err, saveErr)
+		} else {
+			return fmt.Errorf("session detect: %w (launch record: %s)", err, path)
+		}
 	}
+	trace.Session = sessionName
 	fmt.Fprintf(os.Stderr, "session: %s\n", sessionName)
 	launchSucceeded := false
 	defer func() {
 		if !launchSucceeded {
 			killLaunchedGhostty(sessionName, knownSessions, ghosttyExe)
+		}
+	}()
+	defer func() {
+		path, saveErr := writeLaunchRecord(trace, retErr)
+		if saveErr != nil {
+			if retErr == nil {
+				retErr = fmt.Errorf("launch succeeded but saving launch record failed: %w", saveErr)
+			} else {
+				retErr = fmt.Errorf("%w (saving launch record failed: %v)", retErr, saveErr)
+			}
+			return
+		}
+		if retErr != nil {
+			retErr = fmt.Errorf("%w (launch record: %s)", retErr, path)
 		}
 	}()
 
@@ -221,13 +274,15 @@ func LaunchWithError(args []string) error {
 
 	// Wait for cmd.exe to render its prompt. A fixed delay races slow
 	// Ghostty startup and can lose the first command's Enter.
-	if diagnostics, waitErr := waitForShellPrompt(sessionName, shellPromptTimeout); waitErr != nil {
-		path, saveErr := writeLaunchFailure(sessionName, waitErr, diagnostics)
-		if saveErr != nil {
-			return fmt.Errorf("shell wait: %w (saving failure buffer failed: %v)", waitErr, saveErr)
-		}
-		return fmt.Errorf("shell wait: %w (buffer saved: %s)", waitErr, path)
+	trace.FailureStage = "shell_prepare"
+	stageStarted = time.Now()
+	diagnostics, waitErr := waitForShellPrompt(sessionName, shellPromptTimeout)
+	trace.ShellPrepare = time.Since(stageStarted)
+	trace.Diagnostics = diagnostics
+	if waitErr != nil {
+		return fmt.Errorf("shell wait: %w", waitErr)
 	}
+	trace.ShellReady = true
 
 	// Send cd + agent launch command.
 	// Use cmd /k so that the shell does not exit when the agent exits autonomously,
@@ -237,38 +292,40 @@ func LaunchWithError(args []string) error {
 		agent.Cmd,
 		quoteShellArgs(agent.Args))
 	caller := strconv.Itoa(os.Getppid())
+	trace.FailureStage = "command_send"
+	stageStarted = time.Now()
 	_, err = daemonSendWithRetry(sessionName, launchCmd, caller, 3, 2*time.Second)
+	trace.CommandSend = time.Since(stageStarted)
 	if err != nil {
-		diagnostics, _ := captureLaunchDiagnostics(sessionName)
-		path, saveErr := writeLaunchFailure(sessionName, err, diagnostics)
-		if saveErr != nil {
-			return fmt.Errorf("send launch cmd: %w (saving failure buffer failed: %v)", err, saveErr)
-		}
-		return fmt.Errorf("send launch cmd: %w (buffer saved: %s)", err, path)
+		trace.Diagnostics, _ = captureLaunchDiagnostics(sessionName)
+		return fmt.Errorf("send launch cmd: %w", err)
 	}
+	trace.CommandSent = true
 	fmt.Fprintf(os.Stderr, "sent launch: %s %s\n", agent.Cmd, strings.Join(agent.Args, " "))
 
 	// Wait for trust or ready
-	diagnostics, waitErr := waitForReady(sessionName, agent, parsed.ReadyTimeout)
+	trace.FailureStage = "ready_wait"
+	stageStarted = time.Now()
+	diagnostics, waitErr = waitForReady(sessionName, agent, parsed.ReadyTimeout)
+	trace.ReadyWait = time.Since(stageStarted)
+	trace.Diagnostics = diagnostics
+	trace.ReadyMatched = diagnostics.ReadyMatched
 	err = waitErr
 	if err != nil {
-		path, saveErr := writeLaunchFailure(sessionName, err, diagnostics)
-		if saveErr != nil {
-			return fmt.Errorf("ready wait: %w (saving failure buffer failed: %v)", err, saveErr)
-		}
-		return fmt.Errorf("ready wait: %w (buffer saved: %s)", err, path)
+		return fmt.Errorf("ready wait: %w", err)
 	}
 	fmt.Fprintf(os.Stderr, "ready: %s\n", agentName)
 
 	// Send prompt
+	trace.FailureStage = "prompt_send"
+	stageStarted = time.Now()
 	result, err := daemonSendWithRetry(sessionName, prompt, caller, 3, 2*time.Second)
+	trace.PromptSend = time.Since(stageStarted)
 	if err != nil {
-		path, saveErr := writeLaunchFailure(sessionName, err, diagnostics)
-		if saveErr != nil {
-			return fmt.Errorf("send: %w (saving failure buffer failed: %v)", err, saveErr)
-		}
-		return fmt.Errorf("send: %w (buffer saved: %s)", err, path)
+		return fmt.Errorf("send: %w", err)
 	}
+	trace.PromptSent = true
+	trace.FailureStage = "complete"
 	fmt.Fprintf(os.Stderr, "sent: %s\n", result)
 	launchSucceeded = true
 
@@ -634,6 +691,7 @@ func waitForReady(session string, agent AgentDef, timeout time.Duration) (readyW
 		// blink, status bar) which prevents the watcher from ever settling
 		// to "idle" reliably within the timeout window.
 		if strings.Contains(output, agent.ReadyStr) {
+			diagnostics.ReadyMatched = true
 			return diagnostics, nil
 		}
 	}
@@ -686,6 +744,47 @@ func writeLaunchFailure(session string, cause error, diagnostics readyWaitDiagno
 	body.WriteString(diagnostics.LastBuffer)
 	if !strings.HasSuffix(diagnostics.LastBuffer, "\n") {
 		body.WriteByte('\n')
+	}
+	if err := os.WriteFile(path, []byte(body.String()), 0o600); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func writeLaunchRecord(trace launchTrace, outcome error) (string, error) {
+	if outcome != nil && trace.Session != "" && trace.Diagnostics.LastBuffer == "" {
+		if diagnostics, err := captureLaunchDiagnostics(trace.Session); err == nil {
+			trace.Diagnostics = diagnostics
+		}
+	}
+	if err := os.MkdirAll(launchFailDir(), 0o700); err != nil {
+		return "", err
+	}
+	stamp := trace.StartedAt
+	if stamp.IsZero() {
+		stamp = deckpilotNow()
+	}
+	base := sanitizeFilename(trace.Session)
+	if trace.Session == "" {
+		base = "launch"
+	}
+	path := filepath.Join(launchFailDir(), fmt.Sprintf("%s-%s.txt", base, stamp.Format("20060102T150405.000000000")))
+	status := "success"
+	reason := ""
+	if outcome != nil {
+		status = "failure"
+		reason = outcome.Error()
+	}
+	var body strings.Builder
+	fmt.Fprintf(&body, "session: %s\nagent: %s\noutcome: %s\nfailure_stage: %s\nreason: %s\nelapsed: %s\n", trace.Session, trace.Agent, status, trace.FailureStage, reason, deckpilotNow().Sub(stamp).Round(time.Millisecond))
+	fmt.Fprintf(&body, "window_start_elapsed: %s\nsession_detect_elapsed: %s\nshell_prepare_elapsed: %s\ncommand_send_elapsed: %s\nready_wait_elapsed: %s\nprompt_send_elapsed: %s\n", trace.WindowStart, trace.SessionDetect, trace.ShellPrepare, trace.CommandSend, trace.ReadyWait, trace.PromptSend)
+	fmt.Fprintf(&body, "shell_ready: %t\ncommand_sent: %t\nready_marker: %s\nready_matched: %t\nprompt_sent: %t\nsamples: %d\nchanged_samples: %d\nprompt_like_seen: %t\nlast_status: %s\nlast_show_error: %s\n", trace.ShellReady, trace.CommandSent, trace.ReadyMarker, trace.ReadyMatched, trace.PromptSent, trace.Diagnostics.Samples, trace.Diagnostics.ChangedSamples, trace.Diagnostics.SawPromptLike, trace.Diagnostics.LastStatus, trace.Diagnostics.LastShowError)
+	if outcome != nil {
+		body.WriteString("\n--- last buffer ---\n")
+		body.WriteString(trace.Diagnostics.LastBuffer)
+		if !strings.HasSuffix(trace.Diagnostics.LastBuffer, "\n") {
+			body.WriteByte('\n')
+		}
 	}
 	if err := os.WriteFile(path, []byte(body.String()), 0o600); err != nil {
 		return "", err
