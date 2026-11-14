@@ -145,14 +145,9 @@ func LaunchWithError(args []string) (retErr error) {
 	}
 
 	agentName := parsed.AgentName
-	agent, ok := agents[agentName]
-	if !ok {
-		// Not in the table: run it as a command line as given. deckpilot
-		// needs no per-CLI knowledge for this path (see genericAgent).
-		agent, ok = genericAgent(agentName)
-		if !ok {
-			return fmt.Errorf("empty agent command")
-		}
+	agent, err := resolveAgent(agentName)
+	if err != nil {
+		return err
 	}
 	if err := checkAgentCLI(agent); err != nil {
 		return fmt.Errorf("agent CLI check: %w", err)
@@ -342,13 +337,28 @@ func LaunchWithError(args []string) (retErr error) {
 	}
 	trace.PromptSent = true
 	trace.FailureStage = "complete"
-	if agent.Generic {
-		// deckpilot judged "ready" only from the screen having settled.
+	if agent.Generic || agent.Learned {
+		// deckpilot judged "ready" only from the screen having settled (or a learned profile).
 		// Show what the prompt landed on so the caller can check.
 		time.Sleep(2 * readyPollInterval)
 		if out, status, showErr := daemonShowFn(sessionName, "buffer", caller); showErr == nil {
-			fmt.Fprintln(os.Stderr, "deckpilot has no knowledge of this CLI; the prompt was typed once the screen stopped changing. Check it:")
+			if agent.Learned {
+				fmt.Fprintf(os.Stderr, "this CLI uses a learned profile (%s); check the screen:\n", agentProfilesPath())
+			} else {
+				fmt.Fprintln(os.Stderr, "deckpilot has no knowledge of this CLI; the prompt was typed once the screen stopped changing. Check it:")
+			}
 			printLaunchScreen(os.Stderr, sessionName, readyWaitDiagnostics{LastBuffer: out, LastStatus: status})
+		}
+	}
+	if agent.Generic {
+		settledScreen := diagnostics.LastBuffer
+		def := agent
+		def.ReadyStr = readyMarkerFrom(settledScreen)
+		path := agentProfilesPath()
+		if saveErr := saveAgentProfile(agentName, def, settledScreen); saveErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not save profile for %q to %s: %v\n", agentName, path, saveErr)
+		} else {
+			fmt.Fprintf(os.Stderr, "learned: wrote a profile for %q to %s (ready marker: %q). Edit that file if the marker is wrong.\n", agentName, path, def.ReadyStr)
 		}
 	}
 	fmt.Fprintf(os.Stderr, "sent: %s\n", result)
@@ -362,7 +372,7 @@ func LaunchWithError(args []string) (retErr error) {
 func checkAgentCLI(agent AgentDef) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	if agent.Generic {
+	if agent.Generic || agent.Learned {
 		// An unknown CLI may not have --help; only require that it exists.
 		if _, err := exec.LookPath(agent.Cmd); err != nil {
 			return fmt.Errorf("%s is not on PATH: %w", agent.Cmd, err)
@@ -749,19 +759,17 @@ func waitForReady(session string, agent AgentDef, timeout time.Duration) (readyW
 			continue
 		}
 		menuSamples = 0
-		if agent.ReadyStr == "" {
-			// No per-CLI marker: ready means the program drew something
-			// after the launch command and then stopped changing, and it
-			// is neither a menu nor the shell prompt.
+		if agent.ReadyStr != "" && strings.Contains(output, agent.ReadyStr) {
+			diagnostics.ReadyMatched = true
+			return diagnostics, nil
+		} else if agent.ReadyStr == "" || agent.Learned {
+			// No per-CLI marker (or a learned marker that may have gone stale):
+			// ready means the program drew something after the launch command
+			// and then stopped changing, and it is neither a menu nor the shell prompt.
 			if drewAfterLaunch(output) && settledSamples >= settleSamplesForReady && !looksLikeCommandPrompt(output) {
 				diagnostics.ReadyMatched = true
 				return diagnostics, nil
 			}
-			continue
-		}
-		if strings.Contains(output, agent.ReadyStr) {
-			diagnostics.ReadyMatched = true
-			return diagnostics, nil
 		}
 	}
 

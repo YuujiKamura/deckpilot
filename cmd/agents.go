@@ -12,6 +12,7 @@ type AgentDef struct {
 	ThinkingStr string   // substring that indicates TUI is processing a submitted prompt
 	ErrorStr    string   // substring for early failure detection (empty = disabled)
 	Generic     bool     // built from a raw command line; no per-CLI knowledge
+	Learned     bool     // loaded from the user's agents.json
 }
 
 var agents = map[string]AgentDef{
