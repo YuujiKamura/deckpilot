@@ -60,11 +60,14 @@ func Watch(args []string) {
 
 	caller := getCaller()
 
-	doSnapshot := func() bool {
-		raw, err := daemon.DaemonList()
+	// doSnapshot renders one dashboard frame. It returns nil on success,
+	// an error wrapping daemon.ErrSessionNotFound when a filtered session is
+	// absent (permanent), or another error when the daemon could not be read
+	// (transient). The caller decides what to print and whether to keep going.
+	doSnapshot := func() error {
+		raw, err := watchDaemonList()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "watch: list: %v\n", err)
-			return false
+			return fmt.Errorf("list: %w", err)
 		}
 
 		type listEntry struct {
@@ -73,8 +76,7 @@ func Watch(args []string) {
 		}
 		var sessions []listEntry
 		if err := json.Unmarshal([]byte(raw), &sessions); err != nil {
-			fmt.Fprintf(os.Stderr, "watch: bad json: %v\n", err)
-			return false
+			return fmt.Errorf("bad json: %w", err)
 		}
 
 		var entries []watchEntry
@@ -83,7 +85,7 @@ func Watch(args []string) {
 				continue
 			}
 
-			content, _, showErr := daemon.DaemonShow(s.Name, "buffer", caller)
+			content, _, showErr := watchDaemonShow(s.Name, "buffer", caller)
 			pending := "-"
 			tail := ""
 
@@ -119,11 +121,10 @@ func Watch(args []string) {
 
 		if len(entries) == 0 {
 			if filterSession != "" {
-				fmt.Fprintf(os.Stderr, "watch: session %q not found\n", filterSession)
-			} else {
-				fmt.Fprintln(os.Stderr, "no active sessions")
+				return daemon.SessionNotFound(filterSession)
 			}
-			return false
+			fmt.Fprintln(os.Stderr, "no active sessions")
+			return nil
 		}
 
 		if flagJSON {
@@ -143,11 +144,14 @@ func Watch(args []string) {
 					e.Name, e.Status, e.Pending, e.LastChange, e.Tail)
 			}
 		}
-		return true
+		return nil
 	}
 
 	if flagOnce {
-		doSnapshot()
+		if err := doSnapshot(); err != nil {
+			fmt.Fprintf(os.Stderr, "watch: %v\n", err)
+			os.Exit(1)
+		}
 		return
 	}
 
@@ -161,8 +165,22 @@ func Watch(args []string) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
+	// A watch bound to one session stops when that session is gone; watching
+	// all sessions keeps going while the list is empty. Either way a daemon
+	// that stays unreachable ends the loop instead of spamming forever.
+	guard := newSessionPollGuard(transientLimitFor(2*time.Second, defaultTransientBudget))
+	step := func() bool {
+		verdict, line := guard.Observe(doSnapshot())
+		if line != "" {
+			fmt.Fprintf(os.Stderr, "watch: %s\n", line)
+		}
+		return verdict != pollStop
+	}
+
 	// Run once immediately before first tick
-	doSnapshot()
+	if !step() {
+		os.Exit(1)
+	}
 
 	for {
 		select {
@@ -170,7 +188,15 @@ func Watch(args []string) {
 			fmt.Fprintln(os.Stderr, "\nstopped")
 			return
 		case <-ticker.C:
-			doSnapshot()
+			if !step() {
+				os.Exit(1)
+			}
 		}
 	}
 }
+
+// Seams for tests: production reads sessions through the daemon.
+var (
+	watchDaemonList = daemon.DaemonList
+	watchDaemonShow = daemon.DaemonShow
+)

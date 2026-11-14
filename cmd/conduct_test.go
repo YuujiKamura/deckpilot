@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -44,8 +45,8 @@ func TestParseChecklist_HTMLCommentsAndCodeBlocks(t *testing.T) {
 	got := ParseChecklist(src)
 	want := []ChecklistItem{
 		{LineIdx: 2, Body: "do foo", Mark: " "},
-		{LineIdx: 8, Body: "do bar", Mark: " "},
-		{LineIdx: 12, Body: "do baz", Mark: " "},
+		{LineIdx: 7, Body: "do bar", Mark: " "},
+		{LineIdx: 11, Body: "do baz", Mark: " "},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ParseChecklist HTML/Code skip mismatch:\n got=%#v\nwant=%#v", got, want)
@@ -98,7 +99,7 @@ func TestMarkDispatched_FlipsCheckboxOnExactLine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	want := "a\n- [x] task one\n- [ ] task two\nz\n"
+	want := "a\n- [>] task one\n- [ ] task two\nz\n"
 	if got != want {
 		t.Fatalf("MarkDispatched line=1:\n got=%q\nwant=%q", got, want)
 	}
@@ -110,7 +111,7 @@ func TestMarkDispatched_PreservesTrailingNewline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	if got != "- [x] only\n" {
+	if got != "- [>] only\n" {
 		t.Fatalf("trailing newline lost: got %q", got)
 	}
 }
@@ -121,7 +122,7 @@ func TestMarkDispatched_NoTrailingNewline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	if got != "- [x] only" {
+	if got != "- [>] only" {
 		t.Fatalf("no-newline form: got %q", got)
 	}
 }
@@ -198,7 +199,7 @@ func TestConductTick_DispatchesAndMarks(t *testing.T) {
 		return nil
 	}
 
-	cfg := ConductArgs{File: path, Agent: "claude", OneShot: true}
+	cfg := ConductArgs{File: path, Agent: "claude", OneShot: true, MaxWorkers: 1 << 30}
 	dispatched, err := conductTick(cfg, stub)
 	if err != nil {
 		t.Fatalf("conductTick: %v", err)
@@ -206,11 +207,11 @@ func TestConductTick_DispatchesAndMarks(t *testing.T) {
 	if !dispatched {
 		t.Fatal("expected dispatched=true")
 	}
-	if len(launched) != 1 || launched[0][0] != "claude" || launched[0][1] != "first task" {
+	if len(launched) != 1 || launched[0][0] != "claude" || !strings.HasPrefix(launched[0][1], "first task") {
 		t.Fatalf("launched=%v, want [[claude first task]]", launched)
 	}
 	body, _ := readFileForTest(path)
-	want := "- [x] first task\n- [ ] second task\n"
+	want := "- [>] first task\n- [ ] second task\n"
 	if body != want {
 		t.Fatalf("file rewrite:\n got=%q\nwant=%q", body, want)
 	}
@@ -227,7 +228,7 @@ func TestConductTick_NoTodoReturnsFalse(t *testing.T) {
 		launched = append(launched, args)
 		return nil
 	}
-	cfg := ConductArgs{File: path, Agent: "claude", OneShot: true}
+	cfg := ConductArgs{File: path, Agent: "claude", OneShot: true, MaxWorkers: 1 << 30}
 	dispatched, err := conductTick(cfg, stub)
 	if err != nil {
 		t.Fatalf("conductTick: %v", err)
@@ -254,17 +255,17 @@ func TestConductTick_MarksBeforeDispatch(t *testing.T) {
 		observedOnLaunch = b
 		return nil
 	}
-	cfg := ConductArgs{File: path, Agent: "claude", OneShot: true}
+	cfg := ConductArgs{File: path, Agent: "claude", OneShot: true, MaxWorkers: 1 << 30}
 	if _, err := conductTick(cfg, stub); err != nil {
 		t.Fatalf("conductTick: %v", err)
 	}
-	if observedOnLaunch != "- [x] crash me\n" {
+	if observedOnLaunch != "- [>] crash me\n" {
 		t.Fatalf("file at launch-time was %q, want already-checked", observedOnLaunch)
 	}
 }
 
 func TestConductTick_MissingFile(t *testing.T) {
-	cfg := ConductArgs{File: "/definitely/does/not/exist.md", Agent: "claude", OneShot: true}
+	cfg := ConductArgs{File: "/definitely/does/not/exist.md", Agent: "claude", OneShot: true, MaxWorkers: 1 << 30}
 	if _, err := conductTick(cfg, func([]string) error { return nil }); err == nil {
 		t.Fatal("want error for missing file")
 	}

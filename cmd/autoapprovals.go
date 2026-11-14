@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -72,17 +73,6 @@ func AutoApprovals(args []string) {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt)
 
-	// sentEnter: true after we send Enter for the current prompt appearance;
-	// reset when the prompt disappears.
-	sentEnter := false
-
-	// entersSent counts total Enters sent since last backoff reset.
-	// When it reaches maxEntersBeforeBackoff, we pause for backoffDuration.
-	entersSent := 0
-	const maxEntersBeforeBackoff = 3
-	const backoffDuration = 30 * time.Second
-	var backoffUntil time.Time
-
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -97,24 +87,85 @@ func AutoApprovals(args []string) {
 	fmt.Fprintf(os.Stderr, "auto-approvals%s: monitoring %s (interval=%s, agent=%s, Ctrl+C to stop)\n",
 		dryTag, sessionName, interval, agentTag)
 
+	code := runAutoApprovals(autoApprovalsConfig{
+		session:      sessionName,
+		caller:       caller,
+		agentType:    agentType,
+		dryRun:       dryRun,
+		verbose:      verbose,
+		maxTransient: transientLimitFor(interval, defaultTransientBudget),
+	}, ticker.C, sig, os.Stderr)
+	if code != 0 {
+		os.Exit(code)
+	}
+}
+
+// Seams for tests: production polls/sends through the daemon.
+var (
+	autoApprovalsShow = daemon.DaemonShow
+	autoApprovalsSend = daemon.DaemonSend
+)
+
+type autoApprovalsConfig struct {
+	session      string
+	caller       string
+	agentType    string // "" = auto-detect
+	dryRun       bool
+	verbose      bool
+	maxTransient int // consecutive transient DaemonShow failures tolerated
+}
+
+// runAutoApprovals is the monitor loop. It returns the process exit code:
+// 0 on interrupt, 1 when the session is gone (daemon.ErrSessionNotFound) or
+// the daemon stayed unreachable for more than cfg.maxTransient polls in a row.
+func runAutoApprovals(cfg autoApprovalsConfig, tick <-chan time.Time, stop <-chan os.Signal, stderr io.Writer) int {
+	sessionName := cfg.session
+	caller := cfg.caller
+	agentType := cfg.agentType
+	dryRun := cfg.dryRun
+	verbose := cfg.verbose
+	guard := newSessionPollGuard(cfg.maxTransient)
+
+	// sentEnter: true after we send Enter for the current prompt appearance;
+	// reset when the prompt disappears.
+	sentEnter := false
+
+	// entersSent counts total Enters sent since last backoff reset.
+	// When it reaches maxEntersBeforeBackoff, we pause for backoffDuration.
+	entersSent := 0
+	const maxEntersBeforeBackoff = 3
+	const backoffDuration = 30 * time.Second
+	var backoffUntil time.Time
+
+	dryTag := ""
+	if dryRun {
+		dryTag = " [dry-run]"
+	}
+
 	for {
 		select {
-		case <-sig:
-			fmt.Fprintln(os.Stderr, "\nstopped")
-			return
-		case <-ticker.C:
+		case <-stop:
+			fmt.Fprintln(stderr, "\nstopped")
+			return 0
+		case <-tick:
 			// Honour backoff period — don't send Enter while cooling down.
 			if time.Now().Before(backoffUntil) {
 				if verbose {
-					fmt.Fprintf(os.Stderr, "[%s] backoff active (until %s)\n",
+					fmt.Fprintf(stderr, "[%s] backoff active (until %s)\n",
 						time.Now().Format("15:04:05"), backoffUntil.Format("15:04:05"))
 				}
 				continue
 			}
 
-			content, _, err := daemon.DaemonShow(sessionName, "buffer", caller)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "[%s] auto-approvals: %v (retrying...)\n", time.Now().Format("15:04:05"), err)
+			content, _, err := autoApprovalsShow(sessionName, "buffer", caller)
+			verdict, line := guard.Observe(err)
+			if line != "" {
+				fmt.Fprintf(stderr, "[%s] auto-approvals: %s\n", time.Now().Format("15:04:05"), line)
+			}
+			switch verdict {
+			case pollStop:
+				return 1
+			case pollRetry:
 				continue
 			}
 
@@ -126,7 +177,7 @@ func AutoApprovals(args []string) {
 			if agentType == "" {
 				if inferred := inferAgentFromBuffer(content); inferred != "" {
 					agentType = inferred
-					fmt.Fprintf(os.Stderr, "auto-approvals: detected agent=%s\n", agentType)
+					fmt.Fprintf(stderr, "auto-approvals: detected agent=%s\n", agentType)
 				}
 			}
 
@@ -158,26 +209,26 @@ func AutoApprovals(args []string) {
 				}
 
 				if verbose {
-					fmt.Fprintf(os.Stderr, "[%s] Prompt detected (matched: %q, response: %q)%s\n",
+					fmt.Fprintf(stderr, "[%s] Prompt detected (matched: %q, response: %q)%s\n",
 						ts, matched, response, dryTag)
 				} else {
 					respTag := "Enter"
 					if response != "" {
 						respTag = fmt.Sprintf("%q", response)
 					}
-					fmt.Fprintf(os.Stderr, "[%s] Prompt detected, sending %s%s\n", ts, respTag, dryTag)
+					fmt.Fprintf(stderr, "[%s] Prompt detected, sending %s%s\n", ts, respTag, dryTag)
 				}
 
 				if !dryRun {
-					if _, err := daemon.DaemonSend(sessionName, response, caller); err != nil {
-						fmt.Fprintf(os.Stderr, "auto-approvals: send failed: %v\n", err)
+					if _, err := autoApprovalsSend(sessionName, response, caller); err != nil {
+						fmt.Fprintf(stderr, "auto-approvals: send failed: %v\n", err)
 					}
 				}
 				sentEnter = true
 				entersSent++
 
 				if entersSent >= maxEntersBeforeBackoff {
-					fmt.Fprintf(os.Stderr,
+					fmt.Fprintf(stderr,
 						"[%s] WARNING: sent %d Enter(s) for %q with no resolution; backing off %s\n",
 						time.Now().Format("15:04:05"), entersSent, matched, backoffDuration)
 					backoffUntil = time.Now().Add(backoffDuration)
