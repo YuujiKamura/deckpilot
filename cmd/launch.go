@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -239,7 +240,10 @@ func LaunchWithError(args []string) (retErr error) {
 	fmt.Fprintf(os.Stderr, "session: %s\n", sessionName)
 	launchSucceeded := false
 	defer func() {
-		if !launchSucceeded {
+		// A launch that stopped on a screen only a person can answer keeps
+		// its window: closing it would throw away the very thing the caller
+		// has to look at, and make "session left open" a lie.
+		if !launchSucceeded && !errors.Is(retErr, errSessionLeftOpen) {
 			killLaunchedGhostty(sessionName, knownSessions, ghosttyExe)
 		}
 	}()
@@ -317,6 +321,12 @@ func LaunchWithError(args []string) (retErr error) {
 	trace.ReadyMatched = diagnostics.ReadyMatched
 	err = waitErr
 	if err != nil {
+		// Hand the caller what is actually on the screen. deckpilot does
+		// not interpret or answer it; whoever launched decides.
+		printLaunchScreen(os.Stderr, sessionName, diagnostics)
+		if errors.Is(err, errSessionLeftOpen) {
+			fmt.Fprintln(os.Stderr, "the prompt was NOT sent. Answer the screen in the window, then run: deckpilot send "+sessionName+" <prompt>")
+		}
 		return fmt.Errorf("ready wait: %w", err)
 	}
 	fmt.Fprintf(os.Stderr, "ready: %s\n", agentName)
@@ -668,7 +678,7 @@ func waitForReady(session string, agent AgentDef, timeout time.Duration) (readyW
 			if trustAccepted {
 				trustDismissChecks++
 				if trustDismissChecks >= 5 {
-					return diagnostics, fmt.Errorf("trust confirmation was sent once but the dialog did not close; session left open for inspection")
+					return diagnostics, fmt.Errorf("trust confirmation was sent once but the dialog did not close: %w", errSessionLeftOpen)
 				}
 				continue // wait for the one confirmation to dismiss; never repeat Enter
 			}
@@ -685,7 +695,7 @@ func waitForReady(session string, agent AgentDef, timeout time.Duration) (readyW
 				if trustMoveChecks < 5 {
 					continue // allow the TUI to redraw; never repeat the navigation key
 				}
-				return diagnostics, fmt.Errorf("trust option did not become selected after navigation; session left open for inspection")
+				return diagnostics, fmt.Errorf("trust option did not become selected after navigation: %w", errSessionLeftOpen)
 			}
 			if ready {
 				if _, err := daemon.DaemonSend(session, "", caller); err != nil {
@@ -697,7 +707,7 @@ func waitForReady(session string, agent AgentDef, timeout time.Duration) (readyW
 			return diagnostics, fmt.Errorf("trust dialog found but cannot identify a selected trust option; leaving session open")
 		}
 		if trustAccepted && looksLikeCommandPrompt(output) {
-			return diagnostics, fmt.Errorf("Claude exited after trust confirmation and returned to the command prompt; session left open for inspection")
+			return diagnostics, fmt.Errorf("Claude exited after trust confirmation and returned to the command prompt: %w", errSessionLeftOpen)
 		}
 		if trustAccepted {
 			trustDismissChecks = 0
@@ -713,7 +723,7 @@ func waitForReady(session string, agent AgentDef, timeout time.Duration) (readyW
 		if looksLikeMenu(output) {
 			menuSamples++
 			if menuSamples >= menuSamplesBeforeReport {
-				return diagnostics, fmt.Errorf("agent is showing a menu and waits for a choice (not answered by deckpilot); session left open")
+				return diagnostics, fmt.Errorf("agent is showing a menu and waits for a choice (not answered by deckpilot): %w", errSessionLeftOpen)
 			}
 			continue
 		}
@@ -772,7 +782,7 @@ func writeLaunchFailure(session string, cause error, diagnostics readyWaitDiagno
 	var body strings.Builder
 	fmt.Fprintf(&body, "session: %s\nreason: %v\nsamples: %d\nchanged_samples: %d\nprompt_like_seen: %t\nlast_status: %s\nlast_show_error: %s\n\n--- last buffer ---\n",
 		session, cause, diagnostics.Samples, diagnostics.ChangedSamples, diagnostics.SawPromptLike, diagnostics.LastStatus, diagnostics.LastShowError)
-	body.WriteString(diagnostics.LastBuffer)
+	body.WriteString(trimScreen(diagnostics.LastBuffer))
 	if !strings.HasSuffix(diagnostics.LastBuffer, "\n") {
 		body.WriteByte('\n')
 	}
@@ -812,7 +822,7 @@ func writeLaunchRecord(trace launchTrace, outcome error) (string, error) {
 	fmt.Fprintf(&body, "shell_ready: %t\ncommand_sent: %t\nready_marker: %s\nready_matched: %t\nprompt_sent: %t\nsamples: %d\nchanged_samples: %d\nprompt_like_seen: %t\nlast_status: %s\nlast_show_error: %s\n", trace.ShellReady, trace.CommandSent, trace.ReadyMarker, trace.ReadyMatched, trace.PromptSent, trace.Diagnostics.Samples, trace.Diagnostics.ChangedSamples, trace.Diagnostics.SawPromptLike, trace.Diagnostics.LastStatus, trace.Diagnostics.LastShowError)
 	if outcome != nil {
 		body.WriteString("\n--- last buffer ---\n")
-		body.WriteString(trace.Diagnostics.LastBuffer)
+		body.WriteString(trimScreen(trace.Diagnostics.LastBuffer))
 		if !strings.HasSuffix(trace.Diagnostics.LastBuffer, "\n") {
 			body.WriteByte('\n')
 		}

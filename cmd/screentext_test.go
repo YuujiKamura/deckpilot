@@ -243,3 +243,23 @@ func TestReadyWaitStopsOnMenuAndDoesNotCallItReady(t *testing.T) {
 		})
 	}
 }
+
+// A launch that stops on a menu must keep its window: the error carries
+// errSessionLeftOpen, which is what stops the failed-launch cleanup from
+// closing the session the caller has to answer.
+func TestMenuErrorKeepsTheSessionOpen(t *testing.T) {
+	for _, agentName := range []string{"codex", "claude", "gemini", "agy"} {
+		agent := agents[agentName]
+		menu := "Update available\n❯ 1. Update now\n  2. Skip\n"
+		stubShow(t, func(int) (string, string, error) { return menu, "active", nil })
+		_, err := waitForReady("s", agent, time.Minute)
+		if !errors.Is(err, errSessionLeftOpen) {
+			t.Errorf("%s: menu error does not keep the session open: %v", agentName, err)
+		}
+	}
+	// Blindness and plain timeouts are not "left open": those sessions are closed.
+	stubShow(t, func(int) (string, string, error) { return "", "", errors.New("no response from daemon") })
+	if _, err := waitForReady("s", agents["codex"], time.Minute); errors.Is(err, errSessionLeftOpen) {
+		t.Errorf("a blind launch must not be kept open: %v", err)
+	}
+}
