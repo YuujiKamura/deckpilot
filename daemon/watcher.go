@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -72,6 +73,10 @@ type Watcher struct {
 	client      pipeClient
 	stopCh      chan struct{}
 	stopOnce    sync.Once
+	// running is true while a Run goroutine owns this watcher's pipe I/O.
+	// Requests are only answered while it is true; a watcher whose runner
+	// has exited is blind and must say so instead of queueing forever.
+	running atomic.Bool
 }
 
 // NewWatcher creates a Watcher for the given session.
@@ -105,6 +110,11 @@ func (w *Watcher) Stop() {
 // Run is the single goroutine that owns all pipe I/O for this session.
 // Poll on ticker, drain requests between polls.
 func (w *Watcher) Run(ctx context.Context) {
+	if !w.running.CompareAndSwap(false, true) {
+		return // another Run goroutine already owns this watcher
+	}
+	defer w.failPendingRequests()
+	defer w.running.Store(false)
 	log.Printf("watcher[%s]: goroutine started, pipe=%s, hwnd=%v", w.name, w.pipePath, w.hwnd)
 	defer w.client.Close()
 
@@ -340,7 +350,75 @@ func (w *Watcher) Revive() bool {
 	w.stableCount = 0
 	w.mu.Unlock()
 	w.poll()
-	return w.Status() != "dead"
+	if w.Status() == "dead" {
+		return false
+	}
+	// The runner exits when a session is marked dead. A revived watcher
+	// without a runner reports "active" but never answers a request, so
+	// reviving always restarts it (Run is a no-op if one is still alive).
+	if !w.running.Load() && !w.stopped() {
+		go w.Run(context.Background())
+	}
+	return true
+}
+
+// ErrWatcherNotRunning means nothing is reading this session's screen.
+var ErrWatcherNotRunning = errors.New("watcher is not running (screen cannot be read)")
+
+// ErrWatcherNoAnswer means the runner accepted work but did not answer in time.
+var ErrWatcherNoAnswer = errors.New("watcher did not answer (screen cannot be read)")
+
+// requestTimeout stays below the IPC client's 10s deadline so the caller
+// receives this explicit error rather than a bare "no response from daemon".
+var requestTimeout = 8 * time.Second
+
+func (w *Watcher) stopped() bool {
+	select {
+	case <-w.stopCh:
+		return true
+	default:
+		return false
+	}
+}
+
+// submit hands a request to the runner and waits for its answer. It never
+// blocks without bound: no runner, a full queue and a silent runner are each
+// reported as an error.
+func (w *Watcher) submit(req pipeRequest) (string, error) {
+	if !w.running.Load() {
+		// A live watcher must always have a runner. If it is missing
+		// (it exited on a dead verdict that was later reversed), restart
+		// it here; a stopped or dead watcher stays blind and says so.
+		if w.stopped() || w.Status() == "dead" {
+			return "", fmt.Errorf("session %s: %w", w.name, ErrWatcherNotRunning)
+		}
+		go w.Run(context.Background())
+	}
+	select {
+	case w.reqCh <- req:
+	default:
+		return "", fmt.Errorf("session %s request queue full", w.name)
+	}
+	timer := time.NewTimer(requestTimeout)
+	defer timer.Stop()
+	select {
+	case res := <-req.result:
+		return res.content, res.err
+	case <-timer.C:
+		return "", fmt.Errorf("session %s: %w", w.name, ErrWatcherNoAnswer)
+	}
+}
+
+// failPendingRequests answers everything still queued when the runner exits.
+func (w *Watcher) failPendingRequests() {
+	for {
+		select {
+		case req := <-w.reqCh:
+			req.result <- pipeResult{err: fmt.Errorf("session %s: %w", w.name, ErrWatcherNotRunning)}
+		default:
+			return
+		}
+	}
 }
 
 func (w *Watcher) updateContent(content string) {
@@ -437,13 +515,7 @@ func (w *Watcher) Send(text string) (string, error) {
 		payload: text,
 		result:  make(chan pipeResult, 1),
 	}
-	select {
-	case w.reqCh <- req:
-	default:
-		return "", fmt.Errorf("session %s request queue full", w.name)
-	}
-	res := <-req.result
-	return res.content, res.err
+	return w.submit(req)
 }
 
 // FreshTail queues a tail request to the pipe goroutine.
@@ -456,13 +528,9 @@ func (w *Watcher) FreshTail(lines int) (string, error) {
 		lines:  lines,
 		result: make(chan pipeResult, 1),
 	}
-	select {
-	case w.reqCh <- req:
-	default:
-		return w.LastContent(), nil
-	}
-	res := <-req.result
-	return res.content, res.err
+	// A failed read is an error, never silently the cached screen: the
+	// caller decides whether to show stale content and must label it.
+	return w.submit(req)
 }
 
 // FreshHistory queues a history request to the pipe goroutine.
@@ -474,13 +542,7 @@ func (w *Watcher) FreshHistory() (string, error) {
 		kind:   "history",
 		result: make(chan pipeResult, 1),
 	}
-	select {
-	case w.reqCh <- req:
-	default:
-		return "", fmt.Errorf("session %s request queue full", w.name)
-	}
-	res := <-req.result
-	return res.content, res.err
+	return w.submit(req)
 }
 
 // ErrPausePollingTimeout is returned by PausePolling when the watcher

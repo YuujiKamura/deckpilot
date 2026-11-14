@@ -76,8 +76,6 @@ func Show(args []string) {
 		os.Exit(1)
 	}
 
-	_ = tail // tail is reserved for future daemon-side filtering; currently full buffer is fetched
-
 	if follow {
 		runShowFollow(name, mode, caller)
 		return
@@ -90,6 +88,11 @@ func Show(args []string) {
 	}
 
 	fmt.Fprintf(os.Stderr, "[%s]\n", status)
+	// A terminal buffer ends in blank rows; without trimming, the last N
+	// lines of a mostly empty screen are all blank and read as "nothing".
+	if mode != "history" {
+		content = tailLines(trimScreen(content), tail) + "\n"
+	}
 	marked, summary := markInputBox(content)
 	printInputBoxSummary(summary)
 	fmt.Print(marked)
@@ -139,7 +142,7 @@ func printShowHelp() {
   For auto-approval use: deckpilot auto-approvals <session>
 
 Flags:
-  --tail N      Show last N lines (default: 50). Currently fetches full buffer.
+  --tail N      Show last N non-blank-trimmed lines (default: 50).
   --history     Show history instead of live buffer (equivalent to positional arg "history")
   --follow, -f  Poll every 2s and print updated buffer. Display-only, no approval.
   --help, -h    Show this help message

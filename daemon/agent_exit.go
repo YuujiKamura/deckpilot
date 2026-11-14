@@ -10,6 +10,10 @@ import (
 
 var windowsPromptLine = regexp.MustCompile(`^[A-Za-z]:\\[^\r\n]*>\s*$`)
 
+// A shell prompt only means "the agent exited" after the agent command was
+// actually sent. launch writes the metadata before the shell is ready, so the
+// first screen of every launch is a bare prompt; treating that as an exit
+// killed the watcher one second into the launch (2026-11-14, ghostty-6520).
 func isLaunchedAgentAtShellPrompt(session, buffer string) bool {
 	if !hasLaunchMetadata(session) {
 		return false
@@ -36,11 +40,12 @@ func hasLaunchMetadata(session string) bool {
 		return false
 	}
 	var meta struct {
-		SessionName string `json:"session_name"`
-		Agent       string `json:"agent"`
+		SessionName  string `json:"session_name"`
+		Agent        string `json:"agent"`
+		AgentStarted bool   `json:"agent_started"`
 	}
 	if json.Unmarshal(body, &meta) != nil {
 		return false
 	}
-	return meta.SessionName == session && meta.Agent != ""
+	return meta.SessionName == session && meta.Agent != "" && meta.AgentStarted
 }
