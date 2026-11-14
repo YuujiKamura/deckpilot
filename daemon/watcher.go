@@ -424,8 +424,11 @@ func (w *Watcher) failPendingRequests() {
 func (w *Watcher) updateContent(content string) {
 	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
 
+	// The callback takes the daemon lock, and the daemon calls Status() /
+	// Profile() on watchers while holding that lock. Calling it with w.mu
+	// held deadlocks the whole daemon, so the notification is built under
+	// the lock and delivered after it is released.
 	w.mu.Lock()
-	defer w.mu.Unlock()
 
 	w.lastContent = content
 	changed := hash != w.lastHash
@@ -485,22 +488,24 @@ func (w *Watcher) updateContent(content string) {
 	// Check for status transition
 	statusChanged := w.status != prevStatus
 
-	if w.onNotify != nil {
-		w.onNotify(BufferNotification{
-			SessionName:   w.name,
-			Content:       content,
-			Hash:          hash,
-			Changed:       changed,
-			StableFor:     w.stableCount,
-			Status:        w.status,
-			StatusChanged: statusChanged,
-			PrevStatus:    prevStatus,
-		})
+	notification := BufferNotification{
+		SessionName:   w.name,
+		Content:       content,
+		Hash:          hash,
+		Changed:       changed,
+		StableFor:     w.stableCount,
+		Status:        w.status,
+		StatusChanged: statusChanged,
+		PrevStatus:    prevStatus,
 	}
-
-	// Update lastStatus for next iteration
 	if statusChanged {
 		w.lastStatus = w.status
+	}
+	notify := w.onNotify
+	w.mu.Unlock()
+
+	if notify != nil {
+		notify(notification)
 	}
 }
 
