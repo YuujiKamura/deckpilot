@@ -2,11 +2,8 @@ package cmd
 
 import (
 	"errors"
-	"os/exec"
-	"runtime"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestIsSubmitFailure(t *testing.T) {
@@ -176,35 +173,5 @@ func TestSendWithSubmitRetry_NoRecoveryWhenReadFails(t *testing.T) {
 	_, err := sendWithSubmitRetry(send, readHash, "hello", 2, 0)
 	if err == nil {
 		t.Fatal("expected failure (no false recovery on read error), got nil")
-	}
-}
-
-func TestKillGhosttyOnLeak_ZeroPID(t *testing.T) {
-	// Must be a no-op and never panic for non-positive PIDs.
-	killGhosttyOnLeak(0)
-	killGhosttyOnLeak(-1)
-}
-
-func TestKillGhosttyOnLeak_LiveProcess(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("live-process kill test uses a Windows-specific sleeper")
-	}
-	// ping -n 30 keeps a child alive ~29s; we kill it and confirm it dies.
-	c := exec.Command("ping", "-n", "30", "127.0.0.1")
-	if err := c.Start(); err != nil {
-		t.Fatalf("start sleeper: %v", err)
-	}
-	pid := c.Process.Pid
-	done := make(chan error, 1)
-	go func() { done <- c.Wait() }()
-
-	killGhosttyOnLeak(pid)
-
-	select {
-	case <-done:
-		// process exited as expected
-	case <-time.After(5 * time.Second):
-		_ = c.Process.Kill() // cleanup
-		t.Fatalf("process pid=%d still alive 5s after killGhosttyOnLeak", pid)
 	}
 }

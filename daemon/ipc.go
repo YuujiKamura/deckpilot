@@ -120,7 +120,7 @@ func (d *Daemon) handleSend(parts []string) string {
 			wsURL, wsOk = d.resolveWsURL(name)
 		}
 		if !wsOk || wsURL == "" {
-			return fmt.Sprintf("ERR|session not found: %s\n", name)
+			return sessionNotFoundResp(name)
 		}
 		// Send via WebSocket using CP protocol
 		payload := msg + "\r"
@@ -356,7 +356,7 @@ func (d *Daemon) handleShow(parts []string) string {
 		d.refreshSessions()
 		w, ok = d.getWatcher(name)
 		if !ok {
-			return fmt.Sprintf("ERR|session not found: %s\n", name)
+			return sessionNotFoundResp(name)
 		}
 	}
 
@@ -367,7 +367,7 @@ func (d *Daemon) handleShow(parts []string) string {
 			d.refreshSessions()
 			w, ok = d.getWatcher(name)
 			if !ok {
-				return fmt.Sprintf("ERR|session not found: %s\n", name)
+				return sessionNotFoundResp(name)
 			}
 		}
 	}
@@ -491,7 +491,7 @@ func DaemonSend(name, message, caller string) (string, error) {
 		return "", err
 	}
 	if strings.HasPrefix(resp, "ERR|") {
-		return "", fmt.Errorf("%s", strings.TrimPrefix(resp, "ERR|"))
+		return "", errFromResponse(strings.TrimPrefix(resp, "ERR|"))
 	}
 	return strings.TrimPrefix(resp, "OK|"), nil
 }
@@ -503,7 +503,7 @@ func DaemonList() (string, error) {
 		return "", err
 	}
 	if strings.HasPrefix(resp, "ERR|") {
-		return "", fmt.Errorf("%s", strings.TrimPrefix(resp, "ERR|"))
+		return "", errFromResponse(strings.TrimPrefix(resp, "ERR|"))
 	}
 	return strings.TrimPrefix(resp, "OK|"), nil
 }
@@ -516,7 +516,7 @@ func DaemonShow(name, mode, caller string) (content string, status string, err e
 	}
 	resp = strings.TrimSpace(resp)
 	if strings.HasPrefix(resp, "ERR|") {
-		return "", "", fmt.Errorf("%s", strings.TrimPrefix(resp, "ERR|"))
+		return "", "", errFromResponse(strings.TrimPrefix(resp, "ERR|"))
 	}
 	// Response: OK|<base64content>|<status>
 	body := strings.TrimPrefix(resp, "OK|")

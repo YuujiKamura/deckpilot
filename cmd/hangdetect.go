@@ -214,9 +214,30 @@ func HangDetect(args []string) {
 		cancel()
 	}()
 
+	// The detector itself treats a vanished root process as "skip this
+	// probe", so on its own it would watch a closed session forever. Stop
+	// it when the session leaves the daemon's list (or the daemon stays
+	// unreachable past the transient budget).
+	gone := make(chan struct{})
+	go func() {
+		if superviseSessionPresence(ctx, func() error {
+			_, err := resolveSessionPID(sessionName)
+			return err
+		}, probeInterval, newSessionPollGuard(transientLimitFor(probeInterval, defaultTransientBudget)),
+			os.Stderr, "hang-detect") {
+			close(gone)
+			cancel()
+		}
+	}()
+
 	if err := det.Run(ctx); err != nil && err != context.Canceled {
 		fmt.Fprintf(os.Stderr, "hang-detect: run: %v\n", err)
 		os.Exit(1)
+	}
+	select {
+	case <-gone:
+		os.Exit(1)
+	default:
 	}
 }
 
@@ -256,7 +277,7 @@ func resolveSessionPID(sessionName string) (uint32, error) {
 			return uint32(e.PID), nil
 		}
 	}
-	return 0, fmt.Errorf("session not found: %s", sessionName)
+	return 0, daemon.SessionNotFound(sessionName)
 }
 
 // resolveSessionPipePath asks the daemon for sessions and returns the named
@@ -274,7 +295,7 @@ func resolveSessionPipePath(sessionName string) (string, error) {
 			return e.PipePath, nil
 		}
 	}
-	return "", fmt.Errorf("session not found: %s", sessionName)
+	return "", daemon.SessionNotFound(sessionName)
 }
 
 func listSessionsForHangDetect() ([]hangDetectSessionEntry, error) {
@@ -523,7 +544,7 @@ func resolveSessionEntry(ctx context.Context, sessionName string) (hangDetectSes
 			return e, nil
 		}
 	}
-	return hangDetectSessionEntry{}, fmt.Errorf("session not found: %s", sessionName)
+	return hangDetectSessionEntry{}, daemon.SessionNotFound(sessionName)
 }
 
 func listSessionsForHangDetectWithContext(ctx context.Context) ([]hangDetectSessionEntry, error) {

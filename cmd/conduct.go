@@ -83,7 +83,7 @@ func PickNextTodo(items []ChecklistItem) (ChecklistItem, bool) {
 	return ChecklistItem{}, false
 }
 
-// MarkDispatched rewrites `- [ ]` to `- [x]` on the given 0-based line.
+// MarkDispatched rewrites `- [ ]` to `- [>]` (running) on the given 0-based line.
 // Returns an error if the line is out of range, isn't a checkbox, or is
 // already checked. Preserves the source's trailing-newline shape.
 func MarkDispatched(content string, lineIdx int) (string, error) {
