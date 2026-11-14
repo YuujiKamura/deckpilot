@@ -66,6 +66,8 @@ func main() {
 		cmd.Notify(os.Args[2:])
 	case "wait-idle":
 		cmd.WaitIdle(os.Args[2:])
+	case "status":
+		cmd.Status(os.Args[2:])
 	case "cleanup":
 		cmd.Cleanup(os.Args[2:])
 	case "conduct":
@@ -93,6 +95,7 @@ Commands:
   notify           add|remove|list|inbox <args>   Manage hooks and read notifications
   wait-idle        <session> [--timeout=D]        Block until session becomes idle (for bg-task push notify)
                    [--poll=D] [--tail N]
+  status           <session> [--json]             One line: what the worker is doing, read from files / commits / child processes
   cleanup          [--days N] [--dry-run]         Remove hang dumps older than N days (default 3)
                    [--worktrees]                  + GC dead launch-meta; --worktrees also sweeps orphan worktrees
   conduct          --file PATH [--agent NAME]     Watch a markdown checklist file and auto-launch
@@ -102,7 +105,7 @@ Commands:
 Run 'deckpilot help' for this message.
 `)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\n\nAvailable commands: send, show, list, ls, prune, launch, watch, hang-detect, auto-approvals, approve, notify, wait-idle, cleanup, conduct, shutdown\nRun 'deckpilot help' for usage.\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n\nAvailable commands: send, show, list, ls, prune, launch, watch, hang-detect, auto-approvals, approve, notify, wait-idle, status, cleanup, conduct, shutdown\nRun 'deckpilot help' for usage.\n", os.Args[1])
 		os.Exit(1)
 	}
 }
