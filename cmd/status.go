@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/YuujiKamura/deckpilot/daemon"
+	"golang.org/x/sys/windows"
 )
 
 type workerStatus struct {
@@ -264,6 +265,7 @@ func Status(args []string) {
 			if def, resolveErr := resolveAgent(meta.Agent); resolveErr == nil && def.Cmd != "" {
 				agentExe = def.Cmd
 			}
+			tree = dropHelpers(tree, processStartTime, meta.LaunchedAt.Add(helperStartWindow), uint32(os.Getpid()))
 			ws.Children = interestingChildren(tree, agentExe)
 		}
 	}
@@ -304,4 +306,43 @@ func runGitWithTimeout(cwd string, args ...string) (string, error) {
 		return "", err
 	}
 	return string(out), nil
+}
+
+// helperStartWindow: a child that started this soon after the launch is
+// taken to be part of the agent itself (MCP servers, language servers).
+// They live for the whole session and say nothing about the current step.
+const helperStartWindow = 90 * time.Second
+
+// dropHelpers keeps the root and the children that started after cutoff.
+// A child whose start time cannot be read is kept: showing too much is
+// better than hiding a running command. self is this status process.
+func dropHelpers(tree []daemon.ProcessInfo, started func(pid uint32) (time.Time, bool), cutoff time.Time, self uint32) []daemon.ProcessInfo {
+	out := make([]daemon.ProcessInfo, 0, len(tree))
+	for i, p := range tree {
+		if i == 0 {
+			out = append(out, p)
+			continue
+		}
+		if p.PID == self {
+			continue
+		}
+		if t, ok := started(p.PID); ok && t.Before(cutoff) {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+func processStartTime(pid uint32) (time.Time, bool) {
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	if err != nil {
+		return time.Time{}, false
+	}
+	defer windows.CloseHandle(h)
+	var creation, exit, kernel, user windows.Filetime
+	if err := windows.GetProcessTimes(h, &creation, &exit, &kernel, &user); err != nil {
+		return time.Time{}, false
+	}
+	return time.Unix(0, creation.Nanoseconds()), true
 }

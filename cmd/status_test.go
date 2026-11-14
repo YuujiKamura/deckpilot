@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -254,4 +255,31 @@ func TestFormatStatusLine(t *testing.T) {
 			t.Fatalf("got:\n  %q\nwant:\n  %q", got, want)
 		}
 	})
+}
+
+func TestDropHelpersKeepsOnlyLateChildren(t *testing.T) {
+	launch := time.Date(2026, 11, 15, 5, 0, 0, 0, time.UTC)
+	cutoff := launch.Add(helperStartWindow)
+	starts := map[uint32]time.Time{
+		2: launch.Add(10 * time.Second), // MCP server, started with the agent
+		3: launch.Add(10 * time.Minute), // go test, started by the worker
+		4: launch.Add(11 * time.Minute), // this status process
+	}
+	started := func(pid uint32) (time.Time, bool) { t, ok := starts[pid]; return t, ok }
+	tree := []daemon.ProcessInfo{
+		{PID: 1, Name: "ghostty.exe"},
+		{PID: 2, PPID: 1, Name: "python.exe"},
+		{PID: 3, PPID: 1, Name: "go.exe"},
+		{PID: 4, PPID: 1, Name: "deckpilot.exe"},
+		{PID: 5, PPID: 1, Name: "unknown-start.exe"},
+	}
+	got := dropHelpers(tree, started, cutoff, 4)
+	names := make([]string, 0, len(got))
+	for _, p := range got {
+		names = append(names, p.Name)
+	}
+	want := "ghostty.exe,go.exe,unknown-start.exe"
+	if strings.Join(names, ",") != want {
+		t.Fatalf("got %v, want %s", names, want)
+	}
 }

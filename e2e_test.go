@@ -171,7 +171,6 @@ func TestDeletedCommands(t *testing.T) {
 		name string
 		args []string
 	}{
-		{"status", []string{"status", "foo"}},
 		{"listen", []string{"listen"}},
 		{"output", []string{"output", "foo"}},
 	}
