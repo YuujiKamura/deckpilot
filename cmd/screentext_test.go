@@ -151,3 +151,95 @@ func TestTailLinesIgnoresTrailingBlankRows(t *testing.T) {
 		}
 	}
 }
+
+// The Codex update screen captured on 2026-11-14 (ghostty-6520). Its cursor
+// is the Codex ready marker, so "contains the marker" called it ready.
+const codexUpdateScreen = "  Update available · 0.167.1 → 0.167.2\n  Release notes: https://github.com/openai/codex/releases/latest\n\n› 1. Update now (runs npm install -g @openai/codex)\n  2. Skip\n  3. Skip until next version\n\n  enter continue · esc skip\n"
+
+func TestLooksLikeMenu(t *testing.T) {
+	cursors := []string{"›", "❯", ">", "*"}
+	numbering := map[string][2]string{"dot": {"1. ", "2. "}, "paren": {"1) ", "2) "}}
+	for _, cur := range cursors {
+		for name, n := range numbering {
+			for _, onFirst := range []bool{true, false} {
+				first, second := "  "+n[0]+"Update now", "  "+n[1]+"Skip"
+				if onFirst {
+					first = cur + " " + n[0] + "Update now"
+				} else {
+					second = cur + " " + n[1] + "Skip"
+				}
+				screen := "Update available\n" + first + "\n" + second + "\n\nenter continue"
+				if !looksLikeMenu(screen) {
+					t.Errorf("cursor %q %s onFirst=%v: menu not recognised:\n%s", cur, name, onFirst, screen)
+				}
+			}
+		}
+	}
+	if !looksLikeMenu(codexUpdateScreen) {
+		t.Error("the captured Codex update screen is not recognised as a menu")
+	}
+	notMenus := map[string]string{
+		"empty":                    "",
+		"codex ready":              "OpenAI Codex\n\n› Ask Codex to do anything\n\n  ? for shortcuts",
+		"claude ready":             "Welcome\n\n> \n  ⏵⏵ bypass permissions on (shift+tab to cycle)",
+		"numbered text, no cursor": "Steps:\n1. Build\n2. Test\n\n› ",
+		"single choice":            "› 1. Only option\n",
+		"numbers not from one":     "› 2. Second\n  3. Third\n",
+		"cursor on prose":          "› 1.5 is the version\n  2 files changed\n",
+	}
+	for name, screen := range notMenus {
+		if looksLikeMenu(screen) {
+			t.Errorf("%s: wrongly treated as a menu:\n%s", name, screen)
+		}
+	}
+}
+
+// A menu must never be accepted as ready, for any agent, and must be
+// reported quickly rather than after the full ready timeout.
+func TestReadyWaitStopsOnMenuAndDoesNotCallItReady(t *testing.T) {
+	for _, agentName := range []string{"codex", "claude", "gemini", "agy"} {
+		agent := agents[agentName]
+		// The ready marker is on screen together with the menu: as the
+		// menu's own cursor (codex ›, gemini/agy >) or elsewhere, such as
+		// Claude's status line.
+		menu := "Update available\n❯ 1. Update now\n  2. Skip\n\n  " + agent.ReadyStr + " on\n"
+		if len([]rune(agent.ReadyStr)) == 1 {
+			menu = "Update available\n" + agent.ReadyStr + " 1. Update now\n  2. Skip\n"
+		}
+		if agentName == "codex" {
+			menu = codexUpdateScreen
+		}
+		if !strings.Contains(menu, agent.ReadyStr) {
+			t.Fatalf("%s: the fixture must contain the ready marker", agentName)
+		}
+		t.Run(agentName+"/menu-stays", func(t *testing.T) {
+			calls := 0
+			stubShow(t, func(n int) (string, string, error) { calls = n; return menu, "active", nil })
+			d, err := waitForReady("s", agent, time.Minute)
+			if err == nil || d.ReadyMatched {
+				t.Fatalf("a menu was accepted as ready (err=%v)", err)
+			}
+			if !strings.Contains(err.Error(), "menu") {
+				t.Fatalf("err = %v, want a menu error", err)
+			}
+			if calls != menuSamplesBeforeReport {
+				t.Fatalf("reported after %d reads, want %d", calls, menuSamplesBeforeReport)
+			}
+			if d.LastBuffer != menu {
+				t.Fatal("the menu screen was not kept for the caller")
+			}
+		})
+		t.Run(agentName+"/menu-then-ready", func(t *testing.T) {
+			stubShow(t, func(n int) (string, string, error) {
+				if n < menuSamplesBeforeReport {
+					return menu, "active", nil
+				}
+				return "Welcome\n" + agent.ReadyStr + " \n", "active", nil
+			})
+			d, err := waitForReady("s", agent, time.Minute)
+			if err != nil || !d.ReadyMatched {
+				t.Fatalf("a menu answered by the user must lead to ready: err=%v", err)
+			}
+		})
+	}
+}

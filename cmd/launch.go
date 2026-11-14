@@ -619,6 +619,7 @@ func waitForReady(session string, agent AgentDef, timeout time.Duration) (readyW
 	previousHash := ""
 	commandPromptSamples := 0
 	showFailures := 0
+	menuSamples := 0
 
 	for time.Now().Before(deadline) {
 		time.Sleep(readyPollInterval)
@@ -706,6 +707,17 @@ func waitForReady(session string, agent AgentDef, timeout time.Duration) (readyW
 		// TUI agents (Claude Code, etc.) keep updating the terminal (cursor
 		// blink, status bar) which prevents the watcher from ever settling
 		// to "idle" reliably within the timeout window.
+		// A menu waits for a choice; its selection cursor can be the very
+		// character used as the ready marker. deckpilot does not pick an
+		// option: it stops and shows the screen to whoever launched.
+		if looksLikeMenu(output) {
+			menuSamples++
+			if menuSamples >= menuSamplesBeforeReport {
+				return diagnostics, fmt.Errorf("agent is showing a menu and waits for a choice (not answered by deckpilot); session left open")
+			}
+			continue
+		}
+		menuSamples = 0
 		if strings.Contains(output, agent.ReadyStr) {
 			diagnostics.ReadyMatched = true
 			return diagnostics, nil
