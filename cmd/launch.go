@@ -759,7 +759,9 @@ func waitForReady(session string, agent AgentDef, timeout time.Duration) (readyW
 			continue
 		}
 		menuSamples = 0
-		if agent.ReadyStr != "" && strings.Contains(output, agent.ReadyStr) {
+		// A learned marker is only trusted once the program has drawn
+		// something: a short marker could also occur in the echoed command.
+		if agent.ReadyStr != "" && strings.Contains(output, agent.ReadyStr) && (!agent.Learned || drewAfterLaunch(output)) {
 			diagnostics.ReadyMatched = true
 			return diagnostics, nil
 		} else if agent.ReadyStr == "" || agent.Learned {
