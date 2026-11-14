@@ -16,7 +16,7 @@ func TestWatcherMarksLaunchedAgentReturningToCmdAsDead(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(metaPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	meta, _ := json.Marshal(map[string]string{"session_name": "ghostty-42", "agent": "codex"})
+	meta, _ := json.Marshal(map[string]any{"session_name": "ghostty-42", "agent": "codex", "agent_started": true})
 	if err := os.WriteFile(metaPath, meta, 0o600); err != nil {
 		t.Fatal(err)
 	}

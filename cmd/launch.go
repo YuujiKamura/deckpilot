@@ -262,13 +262,14 @@ func LaunchWithError(args []string) (retErr error) {
 	// emit an exact `deckpilot launch ... --cwd ...` resume command if
 	// this session ever stops responding. Best-effort: a write failure
 	// here would only cost the resume hint, not the launch itself.
-	if metaErr := WriteLaunchMeta(LaunchMeta{
+	launchMeta := LaunchMeta{
 		SessionName: sessionName,
 		Agent:       agentName,
 		Cwd:         cwd,
 		Prompt:      prompt,
 		Redacted:    noMetaPrompt,
-	}); metaErr != nil {
+	}
+	if metaErr := WriteLaunchMeta(launchMeta); metaErr != nil {
 		fmt.Fprintf(os.Stderr, "launch-meta: %v (continuing)\n", metaErr)
 	}
 
@@ -301,6 +302,10 @@ func LaunchWithError(args []string) (retErr error) {
 		return fmt.Errorf("send launch cmd: %w", err)
 	}
 	trace.CommandSent = true
+	launchMeta.AgentStarted = true
+	if metaErr := WriteLaunchMeta(launchMeta); metaErr != nil {
+		fmt.Fprintln(os.Stderr, "launch-meta:", metaErr, "(continuing)")
+	}
 	fmt.Fprintf(os.Stderr, "sent launch: %s %s\n", agent.Cmd, strings.Join(agent.Args, " "))
 
 	// Wait for trust or ready
@@ -613,15 +618,26 @@ func waitForReady(session string, agent AgentDef, timeout time.Duration) (readyW
 	diagnostics := readyWaitDiagnostics{}
 	previousHash := ""
 	commandPromptSamples := 0
+	showFailures := 0
 
 	for time.Now().Before(deadline) {
-		time.Sleep(1 * time.Second)
+		time.Sleep(readyPollInterval)
 
-		output, status, err := daemon.DaemonShow(session, "buffer", caller)
+		output, status, err := daemonShowFn(session, "buffer", caller)
+		if err == nil && strings.HasPrefix(status, "stale:") {
+			err = fmt.Errorf("screen is stale (%s)", status)
+		}
 		if err != nil {
 			diagnostics.LastShowError = err.Error()
+			showFailures++
+			// Not being able to see the screen is not "still starting".
+			// Report blindness as soon as it is clearly not a blip.
+			if showFailures >= maxBlindSamples {
+				return diagnostics, fmt.Errorf("cannot read the session screen (%d consecutive failures): %w", showFailures, err)
+			}
 			continue
 		}
+		showFailures = 0
 		diagnostics.LastShowError = ""
 		diagnostics.Samples++
 		diagnostics.LastBuffer = output
@@ -696,6 +712,9 @@ func waitForReady(session string, agent AgentDef, timeout time.Duration) (readyW
 		}
 	}
 
+	if diagnostics.Samples > 0 && diagnostics.ChangedSamples == 0 {
+		return diagnostics, fmt.Errorf("agent is waiting on a screen that did not change for %v and is not the ready prompt", timeout)
+	}
 	return diagnostics, fmt.Errorf("agent did not become ready within %v", timeout)
 }
 

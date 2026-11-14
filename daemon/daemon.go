@@ -399,9 +399,8 @@ func (d *Daemon) refreshSessions() {
 		if !ok {
 			continue
 		}
-		if w.Revive() {
+		if w.Revive() { // Revive restarts the runner
 			log.Printf("daemon: revived session %q", name)
-			go w.Run(context.Background())
 		}
 	}
 }

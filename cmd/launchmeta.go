@@ -32,6 +32,9 @@ type LaunchMeta struct {
 	Prompt      string    `json:"prompt"`
 	LaunchedAt  time.Time `json:"launched_at"`
 	Redacted    bool      `json:"redacted,omitempty"`
+	// AgentStarted is set once the agent command has been sent to the shell.
+	// The daemon only reads a bare shell prompt as "agent exited" after that.
+	AgentStarted bool `json:"agent_started,omitempty"`
 }
 
 // RedactedPromptPlaceholder is the literal string snapshot v2 emits
