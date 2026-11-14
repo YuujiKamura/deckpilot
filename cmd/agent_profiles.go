@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -97,11 +98,15 @@ func saveAgentProfile(name string, def AgentDef, settledScreen string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(entries, "", "  ")
-	if err != nil {
+	// Keep ">" and "<" readable: this file is meant to be edited by hand.
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(entries); err != nil {
 		return err
 	}
-	data = append(data, '\n')
+	data := buf.Bytes()
 	tmpPath := path + ".tmp"
 	if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
 		return err
