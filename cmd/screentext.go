@@ -57,11 +57,18 @@ var daemonShowFn = daemon.DaemonShow
 // kind of menu before the launch stops and hands the screen to the caller.
 const menuSamplesBeforeReport = 3
 
+// settleSamplesForReady is how many consecutive unchanged screens count as
+// "the program is waiting for input" when no ready marker is known.
+const settleSamplesForReady = 3
+
 // looksLikeMenu reports whether the screen is asking for a choice: numbered
 // options 1, 2, ... on consecutive lines, one of them under a selection
 // cursor. A menu is never "ready", even though its cursor can be the same
 // character as an agent's prompt marker (Codex: "› 1. Update now").
 func looksLikeMenu(screen string) bool {
+	if looksLikeChoiceFooter(screen) {
+		return true
+	}
 	want := 1
 	cursor := false
 	for _, raw := range strings.Split(screen, "\n") {
@@ -115,3 +122,42 @@ func choiceNumber(line string) (int, bool) {
 // errSessionLeftOpen marks a launch failure that needs a person to look at
 // the window, so the launch must not close it.
 var errSessionLeftOpen = errors.New("session left open for inspection")
+
+// looksLikeChoiceFooter reports a key hint that only a selection prompt
+// shows ("up/down Navigate", "enter Confirm", "(y/n)"), read from the last
+// few lines so that ordinary output mentioning these words does not count.
+func looksLikeChoiceFooter(screen string) bool {
+	seen := 0
+	lines := strings.Split(screen, "\n")
+	for i := len(lines) - 1; i >= 0 && seen < 6; i-- {
+		line := strings.ToLower(strings.TrimSpace(lines[i]))
+		if line == "" {
+			continue
+		}
+		seen++
+		if strings.Contains(line, "↑/↓") || strings.Contains(line, "(y/n)") || strings.Contains(line, "[y/n]") {
+			return true
+		}
+		if strings.Contains(line, "enter") && strings.Contains(line, "confirm") {
+			return true
+		}
+	}
+	return false
+}
+
+// launchCommandMarker is the start of the command line Launch types into
+// the shell. While it is still the last thing on screen, the program has
+// not drawn anything yet.
+const launchCommandMarker = "cmd /k "
+
+func drewAfterLaunch(screen string) bool {
+	lines := strings.Split(screen, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		return !strings.Contains(line, launchCommandMarker)
+	}
+	return false
+}

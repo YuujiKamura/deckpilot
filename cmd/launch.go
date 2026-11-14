@@ -147,11 +147,12 @@ func LaunchWithError(args []string) (retErr error) {
 	agentName := parsed.AgentName
 	agent, ok := agents[agentName]
 	if !ok {
-		names := make([]string, 0, len(agents))
-		for k := range agents {
-			names = append(names, k)
+		// Not in the table: run it as a command line as given. deckpilot
+		// needs no per-CLI knowledge for this path (see genericAgent).
+		agent, ok = genericAgent(agentName)
+		if !ok {
+			return fmt.Errorf("empty agent command")
 		}
-		return fmt.Errorf("unknown agent: %s (available: %s)", agentName, strings.Join(names, ", "))
 	}
 	if err := checkAgentCLI(agent); err != nil {
 		return fmt.Errorf("agent CLI check: %w", err)
@@ -341,6 +342,15 @@ func LaunchWithError(args []string) (retErr error) {
 	}
 	trace.PromptSent = true
 	trace.FailureStage = "complete"
+	if agent.Generic {
+		// deckpilot judged "ready" only from the screen having settled.
+		// Show what the prompt landed on so the caller can check.
+		time.Sleep(2 * readyPollInterval)
+		if out, status, showErr := daemonShowFn(sessionName, "buffer", caller); showErr == nil {
+			fmt.Fprintln(os.Stderr, "deckpilot has no knowledge of this CLI; the prompt was typed once the screen stopped changing. Check it:")
+			printLaunchScreen(os.Stderr, sessionName, readyWaitDiagnostics{LastBuffer: out, LastStatus: status})
+		}
+	}
 	fmt.Fprintf(os.Stderr, "sent: %s\n", result)
 	launchSucceeded = true
 
@@ -352,6 +362,13 @@ func LaunchWithError(args []string) (retErr error) {
 func checkAgentCLI(agent AgentDef) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
+	if agent.Generic {
+		// An unknown CLI may not have --help; only require that it exists.
+		if _, err := exec.LookPath(agent.Cmd); err != nil {
+			return fmt.Errorf("%s is not on PATH: %w", agent.Cmd, err)
+		}
+		return nil
+	}
 	parts := append(append([]string(nil), agent.Args...), "--help")
 	command := "& " + quotePowerShellArg(agent.Cmd)
 	for _, arg := range parts {
@@ -630,6 +647,7 @@ func waitForReady(session string, agent AgentDef, timeout time.Duration) (readyW
 	commandPromptSamples := 0
 	showFailures := 0
 	menuSamples := 0
+	settledSamples := 0
 
 	for time.Now().Before(deadline) {
 		time.Sleep(readyPollInterval)
@@ -657,6 +675,9 @@ func waitForReady(session string, agent AgentDef, timeout time.Duration) (readyW
 		hash := daemon.BufHash(output)
 		if previousHash != "" && hash != previousHash {
 			diagnostics.ChangedSamples++
+			settledSamples = 0
+		} else if previousHash != "" {
+			settledSamples++
 		}
 		previousHash = hash
 		if looksLikeCommandPrompt(output) {
@@ -704,7 +725,7 @@ func waitForReady(session string, agent AgentDef, timeout time.Duration) (readyW
 				trustAccepted = true
 				continue
 			}
-			return diagnostics, fmt.Errorf("trust dialog found but cannot identify a selected trust option; leaving session open")
+			return diagnostics, fmt.Errorf("trust dialog found but cannot identify a selected trust option: %w", errSessionLeftOpen)
 		}
 		if trustAccepted && looksLikeCommandPrompt(output) {
 			return diagnostics, fmt.Errorf("Claude exited after trust confirmation and returned to the command prompt: %w", errSessionLeftOpen)
@@ -728,6 +749,16 @@ func waitForReady(session string, agent AgentDef, timeout time.Duration) (readyW
 			continue
 		}
 		menuSamples = 0
+		if agent.ReadyStr == "" {
+			// No per-CLI marker: ready means the program drew something
+			// after the launch command and then stopped changing, and it
+			// is neither a menu nor the shell prompt.
+			if drewAfterLaunch(output) && settledSamples >= settleSamplesForReady && !looksLikeCommandPrompt(output) {
+				diagnostics.ReadyMatched = true
+				return diagnostics, nil
+			}
+			continue
+		}
 		if strings.Contains(output, agent.ReadyStr) {
 			diagnostics.ReadyMatched = true
 			return diagnostics, nil
@@ -846,7 +877,7 @@ func trustDialogKey(buf string) (navigate string, trustSelected bool) {
 			return "", true
 		}
 		if !strings.Contains(choice, "no") && !strings.Contains(choice, "exit") {
-			return "", false
+			continue
 		}
 		if i+1 < len(lines) && isPositiveTrustChoice(strings.ToLower(strings.TrimSpace(lines[i+1]))) {
 			return "\x1b[B", false
@@ -861,10 +892,11 @@ func trustDialogKey(buf string) (navigate string, trustSelected bool) {
 
 func selectedTrustChoice(line string) string {
 	trimmed := strings.TrimSpace(line)
-	if !strings.HasPrefix(trimmed, "❯") && !strings.HasPrefix(trimmed, "›") {
+	// agy (Antigravity CLI) marks the selected row with a plain ASCII ">".
+	if !strings.HasPrefix(trimmed, "❯") && !strings.HasPrefix(trimmed, "›") && !strings.HasPrefix(trimmed, "> ") {
 		return ""
 	}
-	return strings.ToLower(strings.TrimSpace(strings.TrimLeft(trimmed, "❯› ")))
+	return strings.ToLower(strings.TrimSpace(strings.TrimLeft(trimmed, "❯›> ")))
 }
 
 func isPositiveTrustChoice(choice string) bool {

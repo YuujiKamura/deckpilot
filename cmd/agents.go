@@ -1,5 +1,7 @@
 package cmd
 
+import "strings"
+
 // AgentDef defines how to launch and interact with a TUI agent.
 type AgentDef struct {
 	Cmd         string   // executable name
@@ -9,6 +11,7 @@ type AgentDef struct {
 	SubmitKey   string   // key sequence appended to text for atomic submit via RAW_INPUT
 	ThinkingStr string   // substring that indicates TUI is processing a submitted prompt
 	ErrorStr    string   // substring for early failure detection (empty = disabled)
+	Generic     bool     // built from a raw command line; no per-CLI knowledge
 }
 
 var agents = map[string]AgentDef{
@@ -64,14 +67,28 @@ var agents = map[string]AgentDef{
 		ErrorStr:    "",
 	},
 	"agy": {
-		Cmd:         "agy",
-		Args:        []string{},
-		ReadyStr:    ">",
-		TrustStr:    "",
+		Cmd: "agy",
+		// argon low: the larger models exhaust the agy quota quickly (2026-11-14).
+		Args:     []string{"--model", "gemini-4-argon-low", "--mode", "accept-edits"},
+		ReadyStr: ">",
+		// agy asks "Do you trust the contents of this project?" on a new folder.
+		TrustStr:    "trust the contents",
 		SubmitKey:   "\r",
 		ThinkingStr: "Generating",
 		ErrorStr:    "",
 	},
+}
+
+// genericAgent builds a definition for a CLI deckpilot has never heard of.
+// The name is taken as a command line ("aider --model x"). It carries no
+// ready marker: readiness is read from the screen settling, and menus are
+// reported to the caller instead of being answered.
+func genericAgent(commandLine string) (AgentDef, bool) {
+	fields := strings.Fields(commandLine)
+	if len(fields) == 0 {
+		return AgentDef{}, false
+	}
+	return AgentDef{Cmd: fields[0], Args: fields[1:], SubmitKey: DefaultSubmitKey, Generic: true}, true
 }
 
 // DefaultSubmitKey is the fallback submit key for unknown agents.
