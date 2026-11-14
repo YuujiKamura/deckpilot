@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -110,3 +111,7 @@ func choiceNumber(line string) (int, bool) {
 	}
 	return n, true
 }
+
+// errSessionLeftOpen marks a launch failure that needs a person to look at
+// the window, so the launch must not close it.
+var errSessionLeftOpen = errors.New("session left open for inspection")
