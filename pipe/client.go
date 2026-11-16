@@ -82,8 +82,9 @@ func (c *Client) SendRecv(message string) (string, error) {
 		}
 		resp := strings.TrimRight(string(tmp[:n]), "\r\n")
 
-		// For TAIL responses, there may be more data (content lines).
-		if strings.HasPrefix(resp, "TAIL|") {
+		// TAIL and HISTORY replies are a header line plus the screen text, which can
+		// be far longer than one read (a long scrollback is hundreds of KiB).
+		if hasBodyAfterHeader(resp) {
 			// Read remaining content until EOF or timeout
 			var buf bytes.Buffer
 			buf.WriteString(string(tmp[:n]))
@@ -106,6 +107,12 @@ func (c *Client) SendRecv(message string) (string, error) {
 	}
 
 	return "", fmt.Errorf("persistent sendrecv failed after retry")
+}
+
+// hasBodyAfterHeader reports whether a reply is "<header>\n<text>" whose text
+// must be read to the end (control plane formatTail / formatHistory).
+func hasBodyAfterHeader(resp string) bool {
+	return strings.HasPrefix(resp, "TAIL|") || strings.HasPrefix(resp, "HISTORY|")
 }
 
 // SendRecv performs a one-shot named pipe exchange: dial, write message,
