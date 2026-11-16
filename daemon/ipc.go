@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bufio"
+	"io"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -30,6 +31,7 @@ func (d *Daemon) handleConn(conn net.Conn) {
 	conn.SetDeadline(time.Now().Add(10 * time.Second))
 
 	scanner := bufio.NewScanner(conn)
+	scanner.Buffer(make([]byte, 64*1024), maxIPCLine) // a long SEND message is one line too
 	if !scanner.Scan() {
 		return
 	}
@@ -536,8 +538,23 @@ func dialDaemon(command string) (string, error) {
 		return "", fmt.Errorf("write: %w", err)
 	}
 
-	scanner := bufio.NewScanner(conn)
+	return readReplyLine(conn)
+}
+
+// maxIPCLine bounds one request or reply line. SHOW --history returns the whole
+// scrollback base64-encoded on one line, which is far past bufio's 64 KiB default
+// (that limit made `show --history` fail as "no response from daemon").
+const maxIPCLine = 64 << 20
+
+// readReplyLine reads one reply line. An oversized or broken reply reports the
+// real reason instead of looking like a silent daemon.
+func readReplyLine(r io.Reader) (string, error) {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 64*1024), maxIPCLine)
 	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return "", fmt.Errorf("read daemon reply: %w", err)
+		}
 		return "", fmt.Errorf("no response from daemon")
 	}
 	return scanner.Text(), nil
