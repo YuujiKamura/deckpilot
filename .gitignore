@@ -10,3 +10,4 @@ coverage
 coverage.out
 coverage.html
 .dispatch/
+.claude/worktrees/
