@@ -414,6 +414,17 @@ func (d *Daemon) handleShow(parts []string) string {
 		mode = parts[2]
 	}
 
+	// A tab target bypasses the watcher: the watcher caches only the active
+	// tab, so a worker running in a background tab must be read straight
+	// off the pipe with the tab named in the request.
+	tab := ""
+	if len(parts) >= 5 {
+		tab = strings.TrimSpace(parts[4])
+	}
+	if tab != "" || mode == "tabs" {
+		return d.showTab(name, caller, mode, tab)
+	}
+
 	w, ok := d.getWatcher(name)
 	if !ok {
 		d.refreshSessions()
@@ -485,6 +496,61 @@ func (d *Daemon) handleShow(parts []string) string {
 
 	encoded := base64.StdEncoding.EncodeToString([]byte(content))
 	return fmt.Sprintf("OK|%s|%s\n", encoded, composeShowStatus(freshErr, w.Status()))
+}
+
+// showTab answers a SHOW that names a tab (or asks for the tab list) by
+// reading the session pipe directly. The status field is "live tab=<t>"
+// because the watcher status describes the active tab, not this one.
+func (d *Daemon) showTab(name, caller, mode, tab string) string {
+	if tab != "" && !pipe.ValidTab(tab) {
+		return fmt.Sprintf("ERR|invalid tab %q (want an index like 0 or id=t_001)\n", tab)
+	}
+	pipePath, ok := d.resolvePipePath(name)
+	if !ok {
+		d.refreshSessions()
+		if pipePath, ok = d.resolvePipePath(name); !ok {
+			return sessionNotFoundResp(name)
+		}
+	}
+
+	if mode != "tabs" {
+		// The terminal answers an unknown tab with the active tab's text, which
+		// would show the wrong worker under the requested tab's name.
+		list, err := pipe.ListTabs(pipePath)
+		if err != nil {
+			return fmt.Sprintf("ERR|tabs: %s\n", sanitizeErr(err))
+		}
+		if !pipe.TabInList(list, tab) {
+			return fmt.Sprintf("ERR|no tab %q in %s (see: deckpilot show %s --tabs)\n", tab, name, name)
+		}
+	}
+
+	var content, status string
+	var err error
+	switch mode {
+	case "tabs":
+		content, err = pipe.ListTabs(pipePath)
+		status = "live tabs"
+	case "history":
+		content, err = pipe.HistoryTab(pipePath, tab)
+		status = "live tab=" + tab
+	default:
+		content, err = pipe.TailTab(pipePath, 50, tab)
+		status = "live tab=" + tab
+	}
+	if err != nil {
+		return fmt.Sprintf("ERR|%s: %s\n", mode, sanitizeErr(err))
+	}
+
+	d.setLastUsed(caller, name)
+	encoded := base64.StdEncoding.EncodeToString([]byte(content))
+	return fmt.Sprintf("OK|%s|%s\n", encoded, status)
+}
+
+// sanitizeErr flattens an error onto one line so it cannot break the
+// line-oriented IPC reply.
+func sanitizeErr(err error) string {
+	return strings.NewReplacer("\r", " ", "\n", " ").Replace(err.Error())
 }
 
 // sendViaWS sends a message to a ghostty-web session via WebSocket using the CP protocol.
@@ -624,7 +690,18 @@ func DaemonList() (string, error) {
 
 // DaemonShow retrieves session content (buffer or history) with caller tracking.
 func DaemonShow(name, mode, caller string) (content string, status string, err error) {
-	resp, err := dialDaemon(fmt.Sprintf("SHOW|%s|%s|%s", name, mode, caller))
+	return DaemonShowTab(name, mode, caller, "")
+}
+
+// DaemonShowTab is DaemonShow aimed at one tab of the session ("0",
+// "id=t_001"). An empty tab reads the active tab through the watcher, as
+// DaemonShow does. mode "tabs" returns the raw LIST_TABS reply.
+func DaemonShowTab(name, mode, caller, tab string) (content string, status string, err error) {
+	req := fmt.Sprintf("SHOW|%s|%s|%s", name, mode, caller)
+	if tab != "" {
+		req += "|" + tab
+	}
+	resp, err := dialDaemon(req)
 	if err != nil {
 		return "", "", err
 	}
@@ -642,7 +719,29 @@ func DaemonShow(name, mode, caller string) (content string, status string, err e
 	if err != nil {
 		return "", "", fmt.Errorf("decode: %w", err)
 	}
-	return string(decoded), strings.TrimSpace(parts[1]), nil
+	status = strings.TrimSpace(parts[1])
+	if err := checkTabReply(mode, tab, status); err != nil {
+		return "", "", err
+	}
+	return string(decoded), status, nil
+}
+
+// checkTabReply refuses a reply to a per-tab SHOW that did not come from
+// showTab. A daemon built before tab support drops the extra field and
+// answers with the active tab, which would pass off one worker's screen as
+// another's.
+func checkTabReply(mode, tab, status string) error {
+	stale := fmt.Errorf("the running daemon does not support tabs (status %q); run 'deckpilot shutdown' and retry", status)
+	if mode == "tabs" {
+		if status != "live tabs" {
+			return stale
+		}
+		return nil
+	}
+	if tab != "" && status != "live tab="+tab {
+		return stale
+	}
+	return nil
 }
 
 // handleHook processes hook management commands

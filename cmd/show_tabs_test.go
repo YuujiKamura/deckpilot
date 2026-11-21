@@ -1,0 +1,46 @@
+package cmd
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestFormatTabListMarksActiveTab(t *testing.T) {
+	raw := "LIST_TABS|2|1\r\nTAB|0|t_000||pwd=C:\\gemini|prompt=0|selection=0\nTAB|1|t_001||pwd=C:\\claude|prompt=0|selection=0\n"
+	got := formatTabList(raw)
+	want := "tabs: 2 (active: 1)\n  0  t_000  C:\\gemini\n* 1  t_001  C:\\claude\n"
+	if got != want {
+		t.Fatalf("got\n%q\nwant\n%q", got, want)
+	}
+}
+
+func TestFormatTabListActiveFirstTab(t *testing.T) {
+	got := formatTabList("LIST_TABS|2|0\nTAB|0|t_000||pwd=A\nTAB|1|t_001||pwd=B")
+	if !strings.Contains(got, "* 0  t_000  A\n") || !strings.Contains(got, "  1  t_001  B\n") {
+		t.Fatalf("active marker wrong:\n%s", got)
+	}
+}
+
+func TestFormatTabListWithoutPwd(t *testing.T) {
+	got := formatTabList("LIST_TABS|1|0\nTAB|0|t_000||prompt=1")
+	if got != "tabs: 1 (active: 0)\n* 0  t_000  \n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+// Lines deckpilot does not understand are shown, not dropped.
+func TestFormatTabListPassesUnknownLinesThrough(t *testing.T) {
+	got := formatTabList("LIST_TABS|1|0\nTAB|0|t_000||pwd=A\nWARN|something new\n")
+	if !strings.Contains(got, "WARN|something new\n") {
+		t.Fatalf("unknown line dropped:\n%s", got)
+	}
+}
+
+func TestFormatTabListEmpty(t *testing.T) {
+	if got := formatTabList(""); got != "" {
+		t.Fatalf("got %q", got)
+	}
+	if got := formatTabList("LIST_TABS|0|0\n"); got != "tabs: 0 (active: 0)\n" {
+		t.Fatalf("got %q", got)
+	}
+}

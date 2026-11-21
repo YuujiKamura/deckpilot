@@ -110,9 +110,11 @@ func (c *Client) SendRecv(message string) (string, error) {
 }
 
 // hasBodyAfterHeader reports whether a reply is "<header>\n<text>" whose text
-// must be read to the end (control plane formatTail / formatHistory).
+// must be read to the end (control plane formatTail / formatHistory, and the
+// one-line-per-tab LIST_TABS reply).
 func hasBodyAfterHeader(resp string) bool {
-	return strings.HasPrefix(resp, "TAIL|") || strings.HasPrefix(resp, "HISTORY|")
+	return strings.HasPrefix(resp, "TAIL|") || strings.HasPrefix(resp, "HISTORY|") ||
+		strings.HasPrefix(resp, "LIST_TABS|")
 }
 
 // SendRecv performs a one-shot named pipe exchange: dial, write message,
@@ -279,6 +281,130 @@ func History(pipePath string) (string, error) {
 	client := NewClient(pipePath)
 	defer client.Close()
 	return client.History()
+}
+
+// ValidTab reports whether tab is a tab target the control plane accepts:
+// a decimal index ("0") or a tab id ("id=t_001"). Anything else — notably
+// a field containing "|" or a newline — would corrupt the request line.
+func ValidTab(tab string) bool {
+	if tab == "" {
+		return false
+	}
+	if strings.HasPrefix(tab, "id=") {
+		id := tab[3:]
+		if id == "" {
+			return false
+		}
+		for _, r := range id {
+			if !(r == '_' || r == '-' || (r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')) {
+				return false
+			}
+		}
+		return true
+	}
+	for _, r := range tab {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// TailTab retrieves the last N lines of a specific tab (index or "id=...").
+// Without a tab the server reads the active tab, so a worker in a
+// background tab is invisible to plain Tail.
+func (c *Client) TailTab(lines int, tab string) (string, error) {
+	if !ValidTab(tab) {
+		return "", fmt.Errorf("invalid tab %q (want an index like 0 or id=t_001)", tab)
+	}
+	resp, err := c.SendRecv(fmt.Sprintf("TAIL|%d|%s", lines, tab))
+	if err != nil {
+		return "", err
+	}
+	if errMsg, ok := IsError(resp); ok {
+		return "", fmt.Errorf("server: %s", errMsg)
+	}
+	return StripTailHeader(resp), nil
+}
+
+// TailTab is a one-shot wrapper for Client.TailTab.
+func TailTab(pipePath string, lines int, tab string) (string, error) {
+	client := NewClient(pipePath)
+	defer client.Close()
+	return client.TailTab(lines, tab)
+}
+
+// HistoryTab retrieves the full scrollback of a specific tab.
+func (c *Client) HistoryTab(tab string) (string, error) {
+	if !ValidTab(tab) {
+		return "", fmt.Errorf("invalid tab %q (want an index like 0 or id=t_001)", tab)
+	}
+	resp, err := c.SendRecv("HISTORY|0|" + tab)
+	if err != nil {
+		return "", err
+	}
+	if errMsg, ok := IsError(resp); ok {
+		return "", fmt.Errorf("server: %s", errMsg)
+	}
+	return StripTailHeader(resp), nil
+}
+
+// HistoryTab is a one-shot wrapper for Client.HistoryTab.
+func HistoryTab(pipePath, tab string) (string, error) {
+	client := NewClient(pipePath)
+	defer client.Close()
+	return client.HistoryTab(tab)
+}
+
+// ListTabs returns the raw LIST_TABS reply: a "LIST_TABS|<count>|<active>"
+// header followed by one "TAB|<idx>|<id>|..." line per tab.
+func (c *Client) ListTabs() (string, error) {
+	resp, err := c.SendRecv("LIST_TABS")
+	if err != nil {
+		return "", err
+	}
+	if errMsg, ok := IsError(resp); ok {
+		return "", fmt.Errorf("server: %s", errMsg)
+	}
+	if !strings.HasPrefix(resp, "LIST_TABS|") {
+		return "", fmt.Errorf("unexpected LIST_TABS reply: %q", firstLine(resp))
+	}
+	return resp, nil
+}
+
+// ListTabs is a one-shot wrapper for Client.ListTabs.
+func ListTabs(pipePath string) (string, error) {
+	client := NewClient(pipePath)
+	defer client.Close()
+	return client.ListTabs()
+}
+
+// TabInList reports whether tab (an index or "id=...") names a tab in a raw
+// LIST_TABS reply. The control plane silently falls back to the active tab
+// for an unknown index or id, so callers must check before trusting a
+// per-tab read.
+func TabInList(listReply, tab string) bool {
+	id, byID := strings.CutPrefix(tab, "id=")
+	for _, ln := range strings.Split(listReply, "\n") {
+		f := strings.Split(strings.TrimSpace(ln), "|")
+		if len(f) < 3 || f[0] != "TAB" {
+			continue
+		}
+		if byID && f[2] == id {
+			return true
+		}
+		if !byID && f[1] == tab {
+			return true
+		}
+	}
+	return false
+}
+
+func firstLine(s string) string {
+	if i := strings.Index(s, "\n"); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
 
 // Ping sends a PING command and expects a PONG response.

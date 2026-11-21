@@ -62,7 +62,7 @@ deckpilot send <session> <message...>
 ### `show` — バッファ取得（個別詳細・表示専用）
 
 ```bash
-deckpilot show [session] [--tail N] [--history] [--follow]
+deckpilot show [session] [--tail N] [--history] [--follow] [--tab T | --tabs]
 ```
 
 個別セッションのバッファを取得する。**入力送信や自動承認は一切行わない。**
@@ -72,6 +72,8 @@ deckpilot show [session] [--tail N] [--history] [--follow]
 - `--tail N`: 末尾 N 行を表示（デフォルト: 50）。
 - `--history`: ライブバッファの代わりにスクロールバック全体を取得。
 - `--follow` / `-f`: 2 秒ごとに再取得して追記表示。表示専用 — 承認処理なし。
+- `--tab T`: アクティブタブではなくタブ T を読む。T は番号（`0`, `1`, ...）かタブ ID（`id=t_001`）。`--tail` / `--history` / `--follow` と併用可。存在しないタブはエラー（ターミナルはアクティブタブを返してしまうため）。
+- `--tabs`: ウィンドウのタブ一覧（番号・ID・cwd、`*` がアクティブ）。
 
 ### `list` / `ls` — セッション一覧
 

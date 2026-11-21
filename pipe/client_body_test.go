@@ -4,17 +4,21 @@ import (
 	"bufio"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Microsoft/go-winio"
 )
 
+var fakeSeq atomic.Int64
+
 // fakeSession answers one request per connection with reply(request) and closes,
 // like the control plane does for TAIL / HISTORY.
 func fakeSession(t *testing.T, reply func(req string) string) string {
 	t.Helper()
-	path := fmt.Sprintf(`\\.\pipe\deckpilot-test-body-%d`, time.Now().UnixNano())
+	// UnixNano alone repeats when two sessions start within one clock tick.
+	path := fmt.Sprintf(`\\.\pipe\deckpilot-test-body-%d-%d`, time.Now().UnixNano(), fakeSeq.Add(1))
 	l, err := winio.ListenPipe(path, nil)
 	if err != nil {
 		t.Fatalf("listen: %v", err)

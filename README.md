@@ -67,7 +67,7 @@ Sends text + Enter to the specified session. Compares buffer hash before and aft
 ### `show` — Get session buffer (view-only)
 
 ```bash
-deckpilot show [session] [--tail N] [--history] [--follow]
+deckpilot show [session] [--tail N] [--history] [--follow] [--tab T | --tabs]
 ```
 
 Retrieves an individual session's buffer. **Never sends input or performs auto-approval.**
@@ -77,6 +77,8 @@ For auto-approval, use `deckpilot auto-approvals <session>`.
 - `--tail N`: Show last N lines (default: 50).
 - `--history`: Retrieve full scrollback instead of live buffer.
 - `--follow` / `-f`: Poll every 2 seconds and print updates. Display-only — no approval.
+- `--tab T`: Read tab T of the window instead of the active tab. T is an index (`0`, `1`, ...) or a tab id (`id=t_001`). Combines with `--tail`, `--history`, `--follow`. An unknown tab is an error (the terminal would otherwise answer with the active tab).
+- `--tabs`: List the window's tabs (index, id, cwd; `*` marks the active tab).
 
 ### `list` / `ls` — List sessions
 
