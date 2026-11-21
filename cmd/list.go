@@ -4,24 +4,35 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/YuujiKamura/deckpilot/daemon"
 )
 
 type listEntry struct {
-	Name       string `json:"name"`
-	PID        int    `json:"pid"`
-	PipePath   string `json:"pipe_path"`
-	WsURL      string `json:"ws_url,omitempty"`
-	AppRuntime string `json:"app_runtime"`
-	Status     string `json:"status"`
-	Uptime     string `json:"uptime"`
-	Agent      string `json:"agent,omitempty"`
-	Cwd        string `json:"cwd,omitempty"`
-	LaunchedAt string `json:"launched_at,omitempty"`
-	DeadReason string `json:"dead_reason,omitempty"`
-	LastOutput string `json:"last_output,omitempty"`
+	Name       string    `json:"name"`
+	PID        int       `json:"pid"`
+	PipePath   string    `json:"pipe_path"`
+	WsURL      string    `json:"ws_url,omitempty"`
+	AppRuntime string    `json:"app_runtime"`
+	Status     string    `json:"status"`
+	Uptime     string    `json:"uptime"`
+	Agent      string    `json:"agent,omitempty"`
+	Cwd        string    `json:"cwd,omitempty"`
+	LaunchedAt string    `json:"launched_at,omitempty"`
+	DeadReason string    `json:"dead_reason,omitempty"`
+	LastOutput string    `json:"last_output,omitempty"`
+	Tabs       []listTab `json:"tabs,omitempty"`
+}
+
+// listTab is one tab of a multi-tab window (daemon tabInfo).
+type listTab struct {
+	Index  int    `json:"index"`
+	ID     string `json:"id"`
+	Pwd    string `json:"pwd,omitempty"`
+	Active bool   `json:"active"`
+	State  string `json:"state"`
 }
 
 // List prints all active sessions as a table.
@@ -74,7 +85,27 @@ func List(args []string) {
 		if s.LaunchedAt != "" {
 			fmt.Printf("  launched: %s\n", s.LaunchedAt)
 		}
+		fmt.Print(formatListTabs(s.Name, s.Tabs))
 	}
+}
+
+// formatListTabs prints one line per tab of a multi-tab window. STATUS above
+// is the active tab's; these lines say what the other tabs are doing and how
+// to read them.
+func formatListTabs(name string, tabs []listTab) string {
+	if len(tabs) < 2 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "  tabs (status above is the * tab; read one with: deckpilot show %s --tab N):\n", name)
+	for _, t := range tabs {
+		mark := " "
+		if t.Active {
+			mark = "*"
+		}
+		fmt.Fprintf(&b, "   %s %d  %-6s %-8s %s\n", mark, t.Index, t.ID, t.State, t.Pwd)
+	}
+	return b.String()
 }
 
 func enrichLaunchMetadata(sessions []listEntry) {

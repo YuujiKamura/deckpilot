@@ -338,6 +338,7 @@ func (d *Daemon) handleList() string {
 	d.refreshSessions()
 
 	infos := d.listSessions()
+	addTabs(infos)
 	b, err := json.Marshal(infos)
 	if err != nil {
 		return fmt.Sprintf("ERR|json: %v\n", err)

@@ -22,11 +22,7 @@ type NotificationEvent struct {
 var notificationInboxMu sync.Mutex
 
 func notificationInboxPath() string {
-	home, err := daemonUserHome()
-	if err == nil {
-		return filepath.Join(home, ".deckpilot", "notifications.jsonl")
-	}
-	return filepath.Join(os.TempDir(), "deckpilot", "notifications.jsonl")
+	return filepath.Join(instanceStateDir(), "notifications.jsonl")
 }
 
 func appendNotificationEvent(event NotificationEvent) error {

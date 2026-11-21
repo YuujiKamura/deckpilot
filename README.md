@@ -94,6 +94,22 @@ ghostty-39   winui3   stalled
 ```
 
 `stalled` indicates the daemon's `IsHungAppWindow(hwnd)` probe returned TRUE — the OS-authoritative hang signal that `hang-detect` consults as its fast path.
+
+A window with several tabs gets one line per tab under it. STATUS describes the
+active (`*`) tab; each tab line says whether it is `working` (an agent spinner),
+`open` (something running, e.g. an agent waiting for input), `shell` (back at a
+prompt) or `unknown` (not readable). Read a tab with `show <session> --tab N`.
+
+```
+ghostty-26144   26144  winui3  8m  active  agy --model gemini-4-neon-low
+  tabs (status above is the * tab; read one with: deckpilot show ghostty-26144 --tab N):
+   * 0  t_002  open     C:\Users\me
+     1  t_003  working  C:\Users\me
+```
+
+A launched window is reported dead ("agent exited and returned to the command
+prompt") only when every tab is at a shell prompt, and it comes back on the next
+`list` once something runs in it again.
 Sessions launched through deckpilot also show the recorded agent, cwd, and
 launch time. `--json` includes the same fields. Dead sessions carry the last
 watcher error and last three terminal lines.
@@ -346,6 +362,24 @@ To build and update the CLI manually, run
 `deckpilot.exe` to `~/bin/deckpilot.exe`. A running daemon stays on the code
 version that started it. Restarting it interrupts session monitoring, so only
 do that when the interruption is acceptable.
+
+## Smoke-testing a new build next to the current one
+
+`DECKPILOT_INSTANCE=<name>` runs a second deckpilot daemon beside the default one:
+its own daemon pipe, singleton mutex, log (`%TEMP%/deckpilot-daemon-<name>.log`),
+idle hooks and notification inbox (`~/.deckpilot/instances/<name>/`), and no
+WebSocket bridge. Both read the same Ghostty sessions and launch metadata.
+`scripts/canary.sh` wraps this:
+
+```bash
+bash scripts/canary.sh build        # build the working tree as the canary (+ deckpilot-canary wrappers in ~/bin)
+deckpilot-canary list               # the new build; plain `deckpilot` is still the current one
+bash scripts/canary.sh smoke        # same read-only commands through both builds, exit codes compared
+bash scripts/canary.sh stop         # stop the canary daemon
+```
+
+`deckpilot version` shows the instance and the build of the daemon it talks to.
+Smoke checks never send input to a session.
 
 ## Caller Identification
 

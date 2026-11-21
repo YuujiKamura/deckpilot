@@ -1,6 +1,9 @@
 package daemon
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
 
 // stalledSpinnerPolls is how many consecutive unchanged-buffer polls (at the
 // watcher's 500ms cadence) a frozen-but-spinner-present screen must persist
@@ -10,6 +13,13 @@ import "strings"
 // A finished worker (no spinner) is called "idle" far sooner — see
 // updateContent.
 const stalledSpinnerPolls = 20
+
+// spinnerWithTimer matches the Claude Code 2.1.x spinner, which carries a
+// running timer after the ellipsis:
+// "· Garnishing… (36s · ↓ 2.4k tokens · thought for 1s)" — ellipsis, space,
+// "(" and an elapsed time ("36s", "1m 30s", "2h"). Seen live 2026-11-21 on
+// Claude Code v2.1.330.
+var spinnerWithTimer = regexp.MustCompile(`(?:…|\.\.\.) \(\d+[hms](?: \d+[ms])?(?:\s|\)|·)`)
 
 // LooksActivelyThinking reports whether a TUI buffer shows an agent that is
 // still mid-task, as opposed to one parked at its ready prompt.
@@ -27,6 +37,9 @@ const stalledSpinnerPolls = 20
 // Used to gate hang detection: a frozen, low-CPU buffer is only a *stall* when
 // the agent is still thinking; the same shape at the ready prompt is just
 // "done" and must not raise a false alarm.
+//
+// Claude Code 2.1.x appends a running timer to the spinner word, so the
+// ellipsis is no longer at the end of the line; spinnerWithTimer covers that.
 func LooksActivelyThinking(buf string) bool {
 	for _, line := range strings.Split(buf, "\n") {
 		t := strings.TrimRight(line, " \r\t")
@@ -40,6 +53,9 @@ func LooksActivelyThinking(buf string) bool {
 			continue
 		}
 		if strings.HasSuffix(t, "…") || strings.HasSuffix(t, "...") {
+			return true
+		}
+		if spinnerWithTimer.MatchString(t) {
 			return true
 		}
 	}

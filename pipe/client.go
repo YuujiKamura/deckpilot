@@ -321,17 +321,30 @@ func (c *Client) TailTab(lines int, tab string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return tabBody(resp, "TAIL|")
+}
+
+// tabBody returns the text of a TAIL / HISTORY reply. Anything that is not
+// that reply (an ERR, a bare BUSY|..., an unknown line) is an error carrying
+// the reply, never an empty screen: an empty string would read as "the tab
+// shows nothing".
+func tabBody(resp, header string) (string, error) {
 	if errMsg, ok := IsError(resp); ok {
 		return "", fmt.Errorf("server: %s", errMsg)
+	}
+	if !strings.HasPrefix(resp, header) {
+		return "", fmt.Errorf("server: %s", firstLine(resp))
 	}
 	return StripTailHeader(resp), nil
 }
 
 // TailTab is a one-shot wrapper for Client.TailTab.
 func TailTab(pipePath string, lines int, tab string) (string, error) {
-	client := NewClient(pipePath)
-	defer client.Close()
-	return client.TailTab(lines, tab)
+	return retryBusy(func() (string, error) {
+		client := NewClient(pipePath)
+		defer client.Close()
+		return client.TailTab(lines, tab)
+	})
 }
 
 // HistoryTab retrieves the full scrollback of a specific tab.
@@ -343,17 +356,16 @@ func (c *Client) HistoryTab(tab string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if errMsg, ok := IsError(resp); ok {
-		return "", fmt.Errorf("server: %s", errMsg)
-	}
-	return StripTailHeader(resp), nil
+	return tabBody(resp, "HISTORY|")
 }
 
 // HistoryTab is a one-shot wrapper for Client.HistoryTab.
 func HistoryTab(pipePath, tab string) (string, error) {
-	client := NewClient(pipePath)
-	defer client.Close()
-	return client.HistoryTab(tab)
+	return retryBusy(func() (string, error) {
+		client := NewClient(pipePath)
+		defer client.Close()
+		return client.HistoryTab(tab)
+	})
 }
 
 // ListTabs returns the raw LIST_TABS reply: a "LIST_TABS|<count>|<active>"
@@ -367,16 +379,40 @@ func (c *Client) ListTabs() (string, error) {
 		return "", fmt.Errorf("server: %s", errMsg)
 	}
 	if !strings.HasPrefix(resp, "LIST_TABS|") {
-		return "", fmt.Errorf("unexpected LIST_TABS reply: %q", firstLine(resp))
+		return "", fmt.Errorf("server: %s", firstLine(resp))
 	}
 	return resp, nil
 }
 
 // ListTabs is a one-shot wrapper for Client.ListTabs.
 func ListTabs(pipePath string) (string, error) {
-	client := NewClient(pipePath)
-	defer client.Close()
-	return client.ListTabs()
+	return retryBusy(func() (string, error) {
+		client := NewClient(pipePath)
+		defer client.Close()
+		return client.ListTabs()
+	})
+}
+
+// busyRetries / busyBackoff bound retryBusy: about 1.5s in all, enough for a
+// renderer lock to clear without making a one-off read feel stuck.
+var (
+	busyRetries = 5
+	busyBackoff = 100 * time.Millisecond
+)
+
+// retryBusy repeats a one-shot read while the terminal answers BUSY
+// (renderer locked, data lane full). Any other outcome returns at once.
+func retryBusy(read func() (string, error)) (string, error) {
+	var out string
+	var err error
+	for attempt := 0; attempt <= busyRetries; attempt++ {
+		out, err = read()
+		if err == nil || !IsBusy(err.Error()) {
+			return out, err
+		}
+		time.Sleep(time.Duration(attempt+1) * busyBackoff)
+	}
+	return out, err
 }
 
 // TabInList reports whether tab (an index or "id=...") names a tab in a raw

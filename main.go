@@ -17,6 +17,10 @@ func main() {
 	daemon.Version = Version
 	daemon.Commit = Commit
 	daemon.BuildTime = BuildTime
+	if v, bad := daemon.InstanceInvalid(); bad {
+		fmt.Fprintf(os.Stderr, "DECKPILOT_INSTANCE=%q is not a valid instance name (lowercase letters, digits, '-', up to 32)\n", v)
+		os.Exit(2)
+	}
 	if len(os.Args) < 2 {
 		cmd.List(nil) // default: show sessions
 		return

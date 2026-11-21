@@ -38,13 +38,10 @@ var daemonUserHome = os.UserHomeDir
 
 // idleHooksDir returns ~/.deckpilot/idle-hooks (or the %TEMP% fallback
 // if HOME / USERPROFILE are unresolvable, matching cmd/paths.go's
-// deckpilotHomeDir() behavior).
+// deckpilotHomeDir() behavior). A named instance keeps its own hooks
+// under ~/.deckpilot/instances/<name>/ (see instance.go).
 func idleHooksDir() string {
-	home, err := daemonUserHome()
-	if err == nil {
-		return filepath.Join(home, ".deckpilot", "idle-hooks")
-	}
-	return filepath.Join(os.TempDir(), "deckpilot", "idle-hooks")
+	return filepath.Join(instanceStateDir(), "idle-hooks")
 }
 
 // generateHookID returns a unique hook ID. Uses timestamp (ns) plus

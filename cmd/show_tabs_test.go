@@ -44,3 +44,24 @@ func TestFormatTabListEmpty(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestFormatListTabs(t *testing.T) {
+	if got := formatListTabs("s", nil); got != "" {
+		t.Fatalf("no tabs: %q", got)
+	}
+	if got := formatListTabs("s", []listTab{{Index: 0, ID: "t_000", Active: true, State: "open"}}); got != "" {
+		t.Fatalf("single tab must print nothing: %q", got)
+	}
+	got := formatListTabs("ghostty-1", []listTab{
+		{Index: 0, ID: "t_000", Pwd: `C:\a`, State: "working"},
+		{Index: 1, ID: "t_001", Pwd: `C:\b`, Active: true, State: "shell"},
+		{Index: 2, ID: "t_007", State: "unknown"},
+	})
+	want := "  tabs (status above is the * tab; read one with: deckpilot show ghostty-1 --tab N):\n" +
+		`     0  t_000  working  C:\a` + "\n" +
+		`   * 1  t_001  shell    C:\b` + "\n" +
+		"     2  t_007  unknown  \n"
+	if got != want {
+		t.Fatalf("got\n%s\nwant\n%s", got, want)
+	}
+}

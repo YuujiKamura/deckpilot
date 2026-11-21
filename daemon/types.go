@@ -32,6 +32,9 @@ type sessionInfo struct {
 	Uptime     string `json:"uptime"`
 	DeadReason string `json:"dead_reason,omitempty"`
 	LastOutput string `json:"last_output,omitempty"`
+	// Tabs lists the window's tabs when it has more than one (the watcher
+	// and Status describe the active tab only).
+	Tabs []tabInfo `json:"tabs,omitempty"`
 }
 
 // BufferNotification is emitted when a watcher detects a change or stability.

@@ -3,7 +3,9 @@ package pipe
 import (
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestValidTab(t *testing.T) {
@@ -174,4 +176,64 @@ func itoa(i int) string {
 		i /= 10
 	}
 	return s
+}
+
+// Each tab read is retried while the terminal answers BUSY and gives up
+// after the budget: busy N times then answer, for N around the budget, for
+// all three reads and both BUSY kinds.
+func TestTabReadsRetryBusy(t *testing.T) {
+	prevB := busyBackoff
+	busyBackoff = time.Millisecond
+	t.Cleanup(func() { busyBackoff = prevB })
+
+	reads := map[string]func(path string) (string, error){
+		"TAIL":      func(p string) (string, error) { return TailTab(p, 5, "0") },
+		"HISTORY":   func(p string) (string, error) { return HistoryTab(p, "0") },
+		"LIST_TABS": func(p string) (string, error) { return ListTabs(p) },
+	}
+	answers := map[string]string{
+		"TAIL":      "TAIL|s|1\nok\n",
+		"HISTORY":   "HISTORY|s|1\nok\n",
+		"LIST_TABS": "LIST_TABS|1|0\nTAB|0|t_000||pwd=A\n",
+	}
+	for kind, read := range reads {
+		for _, busy := range []string{"ERR|BUSY|renderer_locked\n", "ERR|BUSY|data_lane_full\n", "BUSY|renderer_locked\n"} {
+			for _, n := range []int{0, 1, busyRetries, busyRetries + 1, busyRetries + 3} {
+				var calls atomic.Int64
+				path := fakeSession(t, func(req string) string {
+					if int(calls.Add(1)) <= n {
+						return busy
+					}
+					return answers[kind]
+				})
+				_, err := read(path)
+				wantOK := n <= busyRetries
+				if (err == nil) != wantOK {
+					t.Fatalf("%s busy=%q n=%d: err=%v, want ok=%v", kind, busy, n, err, wantOK)
+				}
+				wantCalls := n + 1
+				if !wantOK {
+					wantCalls = busyRetries + 1
+				}
+				if got := int(calls.Load()); got != wantCalls {
+					t.Fatalf("%s n=%d: %d calls, want %d", kind, n, got, wantCalls)
+				}
+			}
+		}
+	}
+}
+
+// A non-busy error is not retried.
+func TestTabReadsDoNotRetryOtherErrors(t *testing.T) {
+	var calls atomic.Int64
+	path := fakeSession(t, func(req string) string {
+		calls.Add(1)
+		return "ERR|s|NO_TABS\n"
+	})
+	if _, err := TailTab(path, 5, "0"); err == nil {
+		t.Fatal("want error")
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("%d calls, want 1", calls.Load())
+	}
 }

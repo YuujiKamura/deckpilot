@@ -26,6 +26,9 @@ func singletonMutexName() string {
 	if s := os.Getenv("DECKPILOT_SINGLETON_MUTEX_SUFFIX"); s != "" {
 		return `Global\deckpilot-daemon-singleton-` + s
 	}
+	if inst := Instance(); inst != "" {
+		return `Global\deckpilot-daemon-singleton-` + inst
+	}
 	return `Global\deckpilot-daemon-singleton`
 }
 

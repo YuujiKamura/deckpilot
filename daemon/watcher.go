@@ -77,6 +77,9 @@ type Watcher struct {
 	// Requests are only answered while it is true; a watcher whose runner
 	// has exited is blind and must say so instead of queueing forever.
 	running atomic.Bool
+	// tabCheck caches whether another tab of this window still runs
+	// something (see tabs.go).
+	tabCheck watcherTabCheck
 }
 
 // NewWatcher creates a Watcher for the given session.
@@ -424,6 +427,11 @@ func (w *Watcher) failPendingRequests() {
 func (w *Watcher) updateContent(content string) {
 	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
 
+	// A shell prompt in the active tab means the agent exited only if no
+	// other tab of the window still runs something. Read before taking
+	// w.mu: it is pipe I/O.
+	agentExited := isLaunchedAgentAtShellPrompt(w.name, content) && !w.anotherTabRunning()
+
 	// The callback takes the daemon lock, and the daemon calls Status() /
 	// Profile() on watchers while holding that lock. Calling it with w.mu
 	// held deadlocks the whole daemon, so the notification is built under
@@ -433,10 +441,10 @@ func (w *Watcher) updateContent(content string) {
 	w.lastContent = content
 	changed := hash != w.lastHash
 	prevStatus := w.lastStatus
-	if isLaunchedAgentAtShellPrompt(w.name, content) {
+	if agentExited {
 		if w.status != "dead" {
 			w.deadAt = time.Now()
-			w.lastError = "agent exited and returned to the command prompt"
+			w.lastError = agentExitedReason
 		}
 		w.lastHash = hash
 		w.stableCount = 0

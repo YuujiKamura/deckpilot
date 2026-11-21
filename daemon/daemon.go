@@ -29,6 +29,9 @@ func IPCPipePath() string {
 	if suffix := os.Getenv("DECKPILOT_PIPE_SUFFIX"); suffix != "" {
 		return `\\.\pipe\deckpilot-daemon-` + suffix
 	}
+	if inst := Instance(); inst != "" {
+		return `\\.\pipe\deckpilot-daemon-` + inst
+	}
 	return `\\.\pipe\deckpilot-daemon`
 }
 
@@ -63,6 +66,11 @@ func New() *Daemon {
 		lastUsed:    make(map[string]string),
 		idleHooks:   make([]IdleHook, 0),
 		WSPort:      8080, // Default port
+	}
+	if Instance() != "" {
+		// 8080 belongs to the default instance; a named instance runs
+		// without the bridge unless --ws-port asks for one.
+		d.WSPort = 0
 	}
 	if loaded := loadIdleHooks(); len(loaded) > 0 {
 		d.idleHooks = loaded
@@ -122,7 +130,7 @@ func (d *Daemon) Run() error {
 	// roughly 30 MB live + 3 compressed backups, expiring after a week.
 	// We keep the startup banner so each rotated file has a clear
 	// pid/timestamp anchor for postmortem grepping.
-	logPath := filepath.Join(os.TempDir(), "deckpilot-daemon.log")
+	logPath := filepath.Join(os.TempDir(), instanceLogName())
 	log.SetOutput(&lumberjack.Logger{
 		Filename:   logPath,
 		MaxSize:    10, // megabytes per file before rotation
@@ -384,14 +392,29 @@ func (d *Daemon) refreshSessions() {
 		log.Printf("daemon: pruned dead session %q (process gone)", name)
 	}
 
-	// 3. Identify dead sessions to attempt revival
+	// 3. Identify dead sessions to attempt revival. A window whose agent
+	// exited is revived only once something runs in it again (a new agent
+	// in that tab, or another tab): reviving it blindly would reset its
+	// dead time on every refresh.
 	var toRevive []string
+	exited := map[string]string{} // name -> pipe path
 	for name, w := range d.watchers {
-		if w.Status() == "dead" && w.Profile().LastError != "agent exited and returned to the command prompt" {
+		if w.Status() != "dead" {
+			continue
+		}
+		if w.Profile().LastError == agentExitedReason {
+			exited[name] = d.sessions[name]
+			continue
+		}
+		toRevive = append(toRevive, name)
+	}
+	d.mu.Unlock()
+
+	for name, pipePath := range exited {
+		if pipePath != "" && windowRunsSomethingAgain(name, pipePath) {
 			toRevive = append(toRevive, name)
 		}
 	}
-	d.mu.Unlock()
 
 	// 4. Attempt revival outside the main lock
 	for _, name := range toRevive {

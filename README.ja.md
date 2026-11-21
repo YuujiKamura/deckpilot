@@ -87,6 +87,13 @@ claude-01   winui3    idle
 codex-02    wt        active
 ```
 
+タブが複数ある窓は、その下にタブごとの行が出る。STATUS はアクティブ（`*`）のタブの状態。各タブ行は
+`working`（エージェントのスピナー）/ `open`（何か動いている。入力待ちのエージェント等）/
+`shell`（プロンプトに戻っている）/ `unknown`（読めない）。中身は `show <session> --tab N` で読む。
+
+起動した窓が dead（「agent exited and returned to the command prompt」）になるのは、全タブが
+プロンプトに戻った時だけ。何かがまた動き出せば次の `list` で戻る。
+
 ### `launch` — エージェント起動
 
 ```bash
@@ -173,6 +180,22 @@ deckpilot auto-approvals <session> [--interval 2s] [--dry-run] [--verbose]
 - `--verbose`: 検出パターン名もログに出力する（例: `Prompt detected (matched: "Y/n")`）。
 
 Ctrl+C で停止。
+
+## 新しいビルドを現行版と並べてスモークテストする
+
+`DECKPILOT_INSTANCE=<名前>` で、既定の daemon の横に 2 体目の daemon を立てられる。daemon パイプ・
+ミューテックス・ログ（`%TEMP%/deckpilot-daemon-<名前>.log`）・アイドルフック・通知箱
+（`~/.deckpilot/instances/<名前>/`）は別、WebSocket は無し。Ghostty のセッションと launch-meta は共有。
+`scripts/canary.sh` がこれを包んでいる:
+
+```bash
+bash scripts/canary.sh build        # 作業ツリーを canary としてビルド（~/bin に deckpilot-canary も置く）
+deckpilot-canary list               # 新しいビルド。素の deckpilot は現行版のまま
+bash scripts/canary.sh smoke        # 同じ読み取り専用コマンドを両方に流して終了コードを比べる
+bash scripts/canary.sh stop         # canary の daemon を止める
+```
+
+`deckpilot version` で、どのインスタンスか・話している daemon のビルドが分かる。スモークは入力を一切送らない。
 
 ## Caller 識別
 

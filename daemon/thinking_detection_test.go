@@ -45,6 +45,37 @@ func TestLooksActivelyThinking(t *testing.T) {
 			buf:  "❯ task\n\n* Thinking...\n\n❯  ",
 			want: true,
 		},
+		// Claude Code v2.1.330 spinners, captured live 2026-11-21.
+		{
+			name: "working: spinner with timer and tokens",
+			buf:  "● Bash(go test ./pipe)\n  ⎿  Running…\n\n✶ Considering… (12s · ↓ 618 tokens)\n\n────\n> \n────",
+			want: true,
+		},
+		{
+			name: "working: spinner with timer, tokens and thought time",
+			buf:  "· Garnishing… (36s · ↓ 2.4k tokens · thought for 1s)\n  ⎿  Tip: Press Shift+Enter to send a multi-line message\n\n> ",
+			want: true,
+		},
+		{
+			name: "working: minutes in the timer",
+			buf:  "✻ Pondering… (1m 30s · ↑ 12k tokens)\n> ",
+			want: true,
+		},
+		{
+			name: "working: timer only",
+			buf:  "✳ Musing… (4s)\n> ",
+			want: true,
+		},
+		{
+			name: "done: parenthesis after ellipsis without a timer is ordinary output",
+			buf:  "Saved… (see log.txt)\n\n> ",
+			want: false,
+		},
+		{
+			name: "done: past-tense summary with timer",
+			buf:  "✻ Cooked for 2m 3s\n\n> ",
+			want: false,
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
