@@ -183,7 +183,10 @@ func probePID(pid int) (Session, bool) {
 		pipePath = fmt.Sprintf(`\\.\pipe\ghostty-win32-ghostty-%d-%d`, pid, pid)
 		appRuntime = "win32"
 		if err := Ping(pipePath); err != nil {
-			return Session{}, false
+			// A window started with GHOSTTY_SESSION_NAME (e.g. a canary
+			// build, "ghostty-canary-...") serves a pipe named after that
+			// session, not after the PID; its session file says which.
+			return sessionFromPIDFile(pid)
 		}
 	}
 	s := Session{
@@ -233,6 +236,40 @@ func findGhosttyPIDs() ([]int, error) {
 		}
 	}
 	return pids, nil
+}
+
+// ghosttySessionsRoot is %LOCALAPPDATA%\ghostty\control-plane (a variable
+// so tests can point it at a temporary directory).
+var ghosttySessionsRoot = func() string {
+	if lad := os.Getenv("LOCALAPPDATA"); lad != "" {
+		return filepath.Join(lad, "ghostty", "control-plane")
+	}
+	return ""
+}
+
+// sessionFromPIDFile finds the session file a Ghostty process wrote for
+// itself (<name>-<pid>.session, any name) and returns that session if its
+// pipe answers. This covers sessions whose name is not "ghostty-<pid>".
+func sessionFromPIDFile(pid int) (Session, bool) {
+	root := ghosttySessionsRoot()
+	if root == "" {
+		return Session{}, false
+	}
+	for _, runtime := range []string{"winui3", "win32"} {
+		matches, _ := filepath.Glob(filepath.Join(root, runtime, "sessions", fmt.Sprintf("*-%d.session", pid)))
+		for _, path := range matches {
+			s, err := parseSessionFile(path)
+			if err != nil || s.PID != pid || s.Name == "" || s.PipePath == "" {
+				continue
+			}
+			if err := Ping(s.PipePath); err != nil {
+				continue
+			}
+			s.AppRuntime = runtime
+			return s, true
+		}
+	}
+	return Session{}, false
 }
 
 // enrichFromSessionFile finds the Ghostty session file matching the
