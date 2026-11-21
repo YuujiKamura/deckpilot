@@ -50,8 +50,10 @@ CLI (deckpilot.exe)
 ### `send` — メッセージ送信
 
 ```bash
-deckpilot send <session> <message...>
+deckpilot send <session> [--tab T] <message...>
 ```
+
+`--tab T`（セッション名の直後。番号か `id=t_001`）でアクティブタブではなくそのタブに打つ。先にタブ一覧で存在を確かめ、アクティブでないタブには、ターミナルが CAPABILITIES で `features=input_tab_routing` を出している時だけ打つ。古い Ghostty はどの入力もアクティブタブに入れるので、別のエージェントに打ち込むくらいなら送らずに断る。
 
 指定セッションにテキスト + Enter を送信する。送信前後のバッファハッシュを比較し、未反映なら自動リトライする。
 

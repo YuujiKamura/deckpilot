@@ -175,6 +175,71 @@ func SendRaw(pipePath string, data []byte) (uint32, error) {
 	return client.SendRaw(data)
 }
 
+// InputTabRoutingFeature is the CAPABILITIES feature a terminal advertises
+// when it delivers INPUT|...|<tab> to that tab. A terminal without it types
+// every input into the active tab whatever the request names.
+const InputTabRoutingFeature = "input_tab_routing"
+
+// SendKeysTab types text into tab (an index, "0") via INPUT. The terminal
+// must advertise InputTabRoutingFeature, or the text lands in the active tab.
+func SendKeysTab(pipePath, text, tab string) (uint32, error) {
+	if !ValidTab(tab) || strings.HasPrefix(tab, "id=") {
+		return 0, fmt.Errorf("invalid input tab %q (want an index)", tab)
+	}
+	return sendQueued(pipePath, fmt.Sprintf("INPUT|deckpilot|%s|%s", Base64Encode(text), tab))
+}
+
+// SendRawTab sends raw bytes (e.g. "\r") to tab via RAW_INPUT.
+func SendRawTab(pipePath string, data []byte, tab string) (uint32, error) {
+	if !ValidTab(tab) || strings.HasPrefix(tab, "id=") {
+		return 0, fmt.Errorf("invalid input tab %q (want an index)", tab)
+	}
+	return sendQueued(pipePath, fmt.Sprintf("RAW_INPUT|deckpilot|%s|%s", base64.StdEncoding.EncodeToString(data), tab))
+}
+
+func sendQueued(pipePath, msg string) (uint32, error) {
+	resp, err := retryBusy(func() (string, error) {
+		client := NewClient(pipePath)
+		defer client.Close()
+		resp, err := client.SendRecv(msg)
+		if err != nil {
+			return "", err
+		}
+		if errMsg, ok := IsError(resp); ok {
+			return "", fmt.Errorf("server: %s", errMsg)
+		}
+		return resp, nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	id, _ := ParseCmdID(resp)
+	return id, nil
+}
+
+// HasFeature asks the terminal for its CAPABILITIES and reports whether the
+// features list names feature. Errors mean "unknown", reported as false.
+func HasFeature(pipePath, feature string) bool {
+	resp, err := retryBusy(func() (string, error) {
+		client := NewClient(pipePath)
+		defer client.Close()
+		return client.SendRecv("CAPABILITIES")
+	})
+	if err != nil {
+		return false
+	}
+	for _, field := range strings.Split(strings.TrimSpace(resp), "|") {
+		if list, ok := strings.CutPrefix(field, "features="); ok {
+			for _, f := range strings.Split(list, ",") {
+				if f == feature {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 // SendEnter sends a carriage return via RAW_INPUT.
 func SendEnter(pipePath string) error {
 	_, err := SendRaw(pipePath, []byte("\r"))

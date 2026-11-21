@@ -65,3 +65,36 @@ func TestFormatListTabs(t *testing.T) {
 		t.Fatalf("got\n%s\nwant\n%s", got, want)
 	}
 }
+
+func TestParseSendArgs(t *testing.T) {
+	cases := []struct {
+		args      []string
+		name, tab string
+		msg       string
+		wantErr   bool
+	}{
+		{[]string{"s", "hello"}, "s", "", "hello", false},
+		{[]string{"s", "hello", "world"}, "s", "", "hello world", false},
+		{[]string{"s", "--tab", "0", "hello", "world"}, "s", "0", "hello world", false},
+		{[]string{"s", "--tab=1", "hi"}, "s", "1", "hi", false},
+		{[]string{"s", "--tab", "id=t_001", "hi"}, "s", "id=t_001", "hi", false},
+		{[]string{"s", "--tab", "0", ""}, "s", "0", "", false},
+		{[]string{"s", "say", "--tab", "0"}, "s", "", "say --tab 0", false},
+		{[]string{"s", "--tab", "0"}, "", "", "", true},
+		{[]string{"s", "--tab"}, "", "", "", true},
+		{[]string{"s", "--tab", "x", "hi"}, "", "", "", true},
+		{[]string{"s", "--tab=", "hi"}, "", "", "", true},
+		{[]string{"s", "--tab", "0|1", "hi"}, "", "", "", true},
+		{[]string{"s"}, "", "", "", true},
+	}
+	for _, c := range cases {
+		name, tab, msg, err := parseSendArgs(append([]string(nil), c.args...))
+		if (err != nil) != c.wantErr {
+			t.Errorf("%q: err=%v, wantErr=%v", c.args, err, c.wantErr)
+			continue
+		}
+		if err == nil && (name != c.name || tab != c.tab || strings.Join(msg, " ") != c.msg) {
+			t.Errorf("%q: got (%q, %q, %q)", c.args, name, tab, strings.Join(msg, " "))
+		}
+	}
+}

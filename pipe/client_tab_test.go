@@ -237,3 +237,55 @@ func TestTabReadsDoNotRetryOtherErrors(t *testing.T) {
 		t.Fatalf("%d calls, want 1", calls.Load())
 	}
 }
+
+// Input to a tab carries the tab index as the last field; ids and malformed
+// tabs are refused before anything is written.
+func TestSendToTabWireFormat(t *testing.T) {
+	rec := &recorder{}
+	path := fakeSession(t, func(req string) string {
+		rec.add(req)
+		return "QUEUED|s|INPUT|42\n"
+	})
+	id, err := SendKeysTab(path, "hi there", "1")
+	if err != nil || id != 42 {
+		t.Fatalf("SendKeysTab: id=%d err=%v", id, err)
+	}
+	if _, err := SendRawTab(path, []byte("\r"), "0"); err != nil {
+		t.Fatalf("SendRawTab: %v", err)
+	}
+	want := []string{"INPUT|deckpilot|" + Base64Encode("hi there") + "|1", "RAW_INPUT|deckpilot|DQ==|0"}
+	if got := rec.all(); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("wire %q, want %q", got, want)
+	}
+	for _, bad := range []string{"", "id=t_001", "-1", "0|1", "0\nX"} {
+		if _, err := SendKeysTab(path, "x", bad); err == nil {
+			t.Errorf("SendKeysTab(%q): want error", bad)
+		}
+		if _, err := SendRawTab(path, []byte("\r"), bad); err == nil {
+			t.Errorf("SendRawTab(%q): want error", bad)
+		}
+	}
+	if n := len(rec.all()); n != 2 {
+		t.Fatalf("bad tabs reached the wire (%d requests)", n)
+	}
+}
+
+func TestHasFeature(t *testing.T) {
+	cases := map[string]bool{
+		"OK|g|CAPABILITIES|reads=TAIL|features=input_tab_routing\n":     true,
+		"OK|g|CAPABILITIES|reads=TAIL|features=a,input_tab_routing,b\n": true,
+		"OK|g|CAPABILITIES|reads=TAIL|control=FOCUS\n":                  false,
+		"OK|g|CAPABILITIES|features=input_tab_routing_v2\n":             false,
+		"OK|g|CAPABILITIES|reads=input_tab_routing\n":                   false,
+		"ERR|UNKNOWN\n": false,
+	}
+	for reply, want := range cases {
+		path := fakeSession(t, func(req string) string { return reply })
+		if got := HasFeature(path, InputTabRoutingFeature); got != want {
+			t.Errorf("HasFeature(%q) = %v, want %v", reply, got, want)
+		}
+	}
+	if HasFeature(`\.\pipe\deckpilot-test-no-such`, InputTabRoutingFeature) {
+		t.Error("unreachable terminal must not claim the feature")
+	}
+}

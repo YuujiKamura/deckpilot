@@ -55,8 +55,10 @@ Each command has a single, well-defined responsibility:
 ### `send` — Send a message
 
 ```bash
-deckpilot send <session> <message...>
+deckpilot send <session> [--tab T] <message...>
 ```
+
+`--tab T` (right after the session; an index or `id=t_001`) types into that tab instead of the active one. The tab is checked against the window's tab list first, and a tab that is not active is only written to when the terminal advertises `features=input_tab_routing` in CAPABILITIES; an older Ghostty types every input into the active tab, so deckpilot refuses rather than typing into the wrong agent.
 
 Sends text + Enter to the specified session. Compares buffer hash before and after sending; reports `accepted` (previously idle), `queued` (previously active), or `no-effect` (the buffer did not move). Unconfirmed sends remain explicitly marked as unconfirmed.
 

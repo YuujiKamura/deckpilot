@@ -85,6 +85,7 @@ func main() {
 
 Commands:
   send             <session> <message...>         Send and report accepted / queued / no-effect
+                   [--tab T] (right after session) Type into tab T instead of the active tab
   show             [session] [--tail N] [--history] [--follow]  Get session buffer (detail, view-only; for approval use auto-approvals)
                    [--tab T | --tabs]             Read a background tab (index or id=t_001) / list tabs
   list                                            List active sessions (alias: ls)
