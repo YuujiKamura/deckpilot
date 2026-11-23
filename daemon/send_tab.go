@@ -54,6 +54,9 @@ func (d *Daemon) handleSendTab(parts []string) string {
 	if !ok {
 		return fmt.Sprintf("ERR|no tab %q in %s (see: deckpilot show %s --tabs)\n", tab, name, name)
 	}
+	if parts[0] == "SENDTABSAFE" && !pipe.HasFeature(pipePath, pipe.InputTabRoutingFeature) {
+		return "ERR|Ghostty lacks input_tab_routing; refusing tab input\n"
+	}
 	if !target.Active && !pipe.HasFeature(pipePath, pipe.InputTabRoutingFeature) {
 		return fmt.Sprintf("ERR|%s's Ghostty types every input into the active tab, and tab %s is not active; "+
 			"switch to that tab and send without --tab, or reopen the window on a Ghostty that routes input by tab\n", name, tab)
@@ -163,4 +166,17 @@ func parseSendTabReply(resp string) (string, error) {
 		return "", errFromResponse(strings.TrimPrefix(resp, "ERR|"))
 	}
 	return strings.TrimPrefix(resp, "OK|"), nil
+}
+
+// DaemonSendTabSafe requires routing even when the target is active.
+func DaemonSendTabSafe(name, message, caller, tab string) (string, error) {
+	if strings.ContainsAny(name+caller+tab, "|\r\n") {
+		return "", fmt.Errorf("invalid session, caller or tab")
+	}
+	encoded := base64.StdEncoding.EncodeToString([]byte(message))
+	resp, err := dialDaemon(fmt.Sprintf("SENDTABSAFE|%s|%s|%s|%s", name, encoded, caller, tab))
+	if err != nil {
+		return "", err
+	}
+	return parseSendTabReply(resp)
 }

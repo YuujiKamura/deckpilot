@@ -281,3 +281,15 @@ Daemon は `\\.\pipe\deckpilot-daemon` で以下のコマンドを受け付け�
 ## License
 
 MIT
+
+### タブ操作
+
+```powershell
+deckpilot tab new ghostty-123
+deckpilot launch codex "プロジェクトを調べて" --into ghostty-123 --cwd C:\project
+deckpilot show ghostty-123 --tabs
+deckpilot show ghostty-123 --tab id=t_001
+deckpilot tab close ghostty-123 id=t_001
+```
+`--into` には Ghostty の `input_tab_routing` が必要です。タブの削除には番号または ID を使えます。最後のタブは閉じられません。起動時に対応が必要な場合、新しいタブは開いたままになります。
+`--into` で信頼確認が表示された場合は停止し、対象タブでの手動対応を待ちます。更新後は古い daemon を再起動してください。

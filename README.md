@@ -505,3 +505,15 @@ Recent highlights (2026-06-04):
 ## License
 
 MIT
+
+### Tabs
+
+```powershell
+deckpilot tab new ghostty-123
+deckpilot launch codex "Inspect the project" --into ghostty-123 --cwd C:\project
+deckpilot show ghostty-123 --tabs
+deckpilot show ghostty-123 --tab id=t_001
+deckpilot tab close ghostty-123 id=t_001
+```
+`--into` requires Ghostty `input_tab_routing`. Tab IDs or indices can be used to close tabs; the last tab cannot be closed. Launch leaves the new tab open if startup needs attention.
+When a trust dialog appears during `--into`, startup stops for manual action in that tab. After upgrading, restart an older daemon before using the new commands.

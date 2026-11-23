@@ -53,8 +53,10 @@ func (d *Daemon) handleConn(conn net.Conn) {
 		resp = "PONG\n"
 	case "SEND":
 		resp = d.handleSend(parts)
-	case "SENDTAB":
+	case "SENDTAB", "SENDTABSAFE":
 		resp = d.handleSendTab(parts)
+	case "TAB":
+		resp = d.handleTab(parts)
 	case "SENDRAW":
 		resp = d.handleSendRaw(parts)
 	case "PRUNE":

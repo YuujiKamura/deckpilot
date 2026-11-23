@@ -23,6 +23,7 @@ import (
 // the calling Launch can keep its existing fmt.Fprintln error
 // reporting style.
 type LaunchArgs struct {
+	Into            string
 	AgentName       string
 	Prompt          string
 	Cwd             string
@@ -76,7 +77,7 @@ type launchTrace struct {
 // <prompt...>` minus the `launch` token).
 func ParseLaunchArgs(args []string, defaultCwd string) (LaunchArgs, string) {
 	if len(args) < 1 {
-		return LaunchArgs{}, "usage: deckpilot launch <agent> <prompt...> [--cwd DIR] [--ready-timeout DURATION] [--shared-cwd] [--no-meta-prompt]"
+		return LaunchArgs{}, "usage: deckpilot launch <agent> <prompt...> [--cwd DIR] [--into SESSION] [--ready-timeout DURATION] [--shared-cwd] [--no-meta-prompt]"
 	}
 	out := LaunchArgs{
 		AgentName:    args[0],
@@ -86,6 +87,12 @@ func ParseLaunchArgs(args []string, defaultCwd string) (LaunchArgs, string) {
 	var promptParts []string
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
+		case "--into":
+			if i+1 >= len(args) || args[i+1] == "" {
+				return LaunchArgs{}, "--into requires a session"
+			}
+			out.Into = args[i+1]
+			i++
 		case "--cwd":
 			if i+1 >= len(args) {
 				return LaunchArgs{}, "--cwd requires a value"
@@ -113,7 +120,7 @@ func ParseLaunchArgs(args []string, defaultCwd string) (LaunchArgs, string) {
 	}
 	out.Prompt = strings.Join(promptParts, " ")
 	if out.Prompt == "" {
-		return LaunchArgs{}, "usage: deckpilot launch <agent> <prompt...> [--cwd DIR] [--ready-timeout DURATION] [--shared-cwd] [--no-meta-prompt]"
+		return LaunchArgs{}, "usage: deckpilot launch <agent> <prompt...> [--cwd DIR] [--into SESSION] [--ready-timeout DURATION] [--shared-cwd] [--no-meta-prompt]"
 	}
 	return out, ""
 }
@@ -159,6 +166,10 @@ func LaunchWithError(args []string) (retErr error) {
 
 	if err := daemon.EnsureRunning(); err != nil {
 		return fmt.Errorf("daemon: %w", err)
+	}
+
+	if parsed.Into != "" {
+		return launchInto(parsed, agent)
 	}
 
 	// Snapshot current sessions
@@ -646,6 +657,9 @@ func readSessionEntries() ([]listEntry, error) {
 }
 
 func waitForReady(session string, agent AgentDef, timeout time.Duration) (readyWaitDiagnostics, error) {
+	return waitForReadyUsing(session, agent, timeout, daemonShowFn, false)
+}
+func waitForReadyUsing(session string, agent AgentDef, timeout time.Duration, show func(string, string, string) (string, string, error), tabMode bool) (readyWaitDiagnostics, error) {
 	caller := strconv.Itoa(os.Getppid())
 	deadline := time.Now().Add(timeout)
 	trustAccepted := false
@@ -662,7 +676,7 @@ func waitForReady(session string, agent AgentDef, timeout time.Duration) (readyW
 	for time.Now().Before(deadline) {
 		time.Sleep(readyPollInterval)
 
-		output, status, err := daemonShowFn(session, "buffer", caller)
+		output, status, err := show(session, "buffer", caller)
 		if err == nil && strings.HasPrefix(status, "stale:") {
 			err = fmt.Errorf("screen is stale (%s)", status)
 		}
@@ -706,6 +720,9 @@ func waitForReady(session string, agent AgentDef, timeout time.Duration) (readyW
 		// firing, sending the prompt into the unanswered menu. TrustStr
 		// non-empty just opts the agent into the check.
 		if looksLikeTrustDialog(output) {
+			if tabMode {
+				return diagnostics, fmt.Errorf("trust dialog requires manual action in the target tab: %w", errSessionLeftOpen)
+			}
 			if trustAccepted {
 				trustDismissChecks++
 				if trustDismissChecks >= 5 {

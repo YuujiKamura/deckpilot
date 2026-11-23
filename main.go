@@ -58,6 +58,8 @@ func main() {
 		cmd.Prune(os.Args[2:])
 	case "show":
 		cmd.Show(os.Args[2:])
+	case "tab":
+		cmd.Tab(os.Args[2:])
 	case "launch":
 		cmd.Launch(os.Args[2:])
 	case "watch":
@@ -90,7 +92,8 @@ Commands:
                    [--tab T | --tabs]             Read a background tab (index or id=t_001) / list tabs
   list                                            List active sessions (alias: ls)
   prune            <dead-session>                 Remove tracking for a dead session (does not kill Ghostty)
-  launch           <agent> <prompt...> [--cwd D]  Start agent in new Ghostty window
+  tab              new <session> | close <session> <tab>  Create or close a tab
+  launch           <agent> <prompt...> [--cwd D] [--into session]  Start agent in a window or tab
   watch            [session] [--once] [--json]    Monitor sessions (view-only, no approval)
   hang-detect      <session> [--cpu-threshold N]  External non-destructive hang monitor (run alongside daemon)
                    [--stall-seconds N] [--probe-interval DUR]
