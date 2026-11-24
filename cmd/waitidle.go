@@ -92,46 +92,59 @@ func WaitIdle(args []string) {
 		os.Exit(1)
 	}
 
-	deadline := time.Now().Add(timeout)
-	sawSession := false
-	for {
-		status, found, err := lookupStatus(name)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "wait-idle: %v\n", err)
+	status, found, err := waitForIdle(timeout, poll, func() (string, bool, error) { return lookupStatus(name) })
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wait-idle: %v\n", err)
+		os.Exit(1)
+	}
+	if strings.HasPrefix(status, "timeout:") {
+		if !found {
+			fmt.Fprintf(os.Stderr, "wait-idle: session %q not found within %s\n", name, timeout)
 			os.Exit(1)
 		}
-		if found {
-			sawSession = true
-			if status == "idle" || status == "stalled" {
-				fmt.Printf("%s: %s\n", name, status)
-				if tail > 0 {
-					content, _, err := daemon.DaemonShow(name, "buffer", "")
-					if err != nil {
-						fmt.Fprintf(os.Stderr, "wait-idle: could not read terminal tail: %v\n", err)
-					} else {
-						fmt.Printf("--- last %d lines ---\n", tail)
-						if content != "" {
-							fmt.Println(lastLines(content, tail))
-						}
-					}
-				}
-				return
+		fmt.Fprintf(os.Stderr, "wait-idle: timeout after %s (last status=%q)\n", timeout, strings.TrimPrefix(status, "timeout:"))
+		os.Exit(2)
+	}
+	fmt.Printf("%s: %s\n", name, status)
+	if tail > 0 && status != "gone" {
+		content, _, err := daemon.DaemonShow(name, "buffer", "")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "wait-idle: could not read terminal tail: %v\n", err)
+		} else {
+			fmt.Printf("--- last %d lines ---\n", tail)
+			if content != "" {
+				fmt.Println(lastLines(content, tail))
 			}
-		} else if sawSession {
-			// Session disappeared after we saw it — treat as terminal.
-			fmt.Printf("%s: gone\n", name)
-			return
 		}
+	}
 
-		if time.Now().After(deadline) {
-			if !sawSession {
-				fmt.Fprintf(os.Stderr, "wait-idle: session %q not found within %s\n", name, timeout)
-				os.Exit(1)
-			}
-			fmt.Fprintf(os.Stderr, "wait-idle: timeout after %s (last status=%q)\n", timeout, status)
-			os.Exit(2)
+}
+
+// waitForIdle is shared by wait-idle and launch.
+func waitForIdle(timeout, poll time.Duration, lookup func() (string, bool, error)) (string, bool, error) {
+	deadline := time.Now().Add(timeout)
+	saw := false
+	for {
+		status, found, err := lookup()
+		if err != nil {
+			return "", saw, err
 		}
-		time.Sleep(poll)
+		if found {
+			saw = true
+			if status == "idle" || status == "stalled" {
+				return status, true, nil
+			}
+		} else if saw {
+			return "gone", true, nil
+		}
+		if !time.Now().Before(deadline) {
+			return "timeout:" + status, saw, nil
+		}
+		delay := time.Until(deadline)
+		if delay > poll {
+			delay = poll
+		}
+		time.Sleep(delay)
 	}
 }
 

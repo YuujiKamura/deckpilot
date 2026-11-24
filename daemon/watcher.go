@@ -465,14 +465,8 @@ func (w *Watcher) updateContent(content string) {
 			// indistinguishable from "done". Require a longer freeze before
 			// crying stall so a spinner that skipped one repaint frame is
 			// not flagged; a finished worker (no spinner) goes idle sooner.
-			if LooksActivelyThinking(content) {
-				if w.stableCount >= stalledSpinnerPolls {
-					w.status = "stalled"
-				}
-				// else: spinner still on screen, presumed working — leave
-				// status as the "active" set on the last changed poll.
-			} else if w.stableCount >= 3 {
-				w.status = "idle"
+			if next := StableScreenStatus(content, w.stableCount); next != "" {
+				w.status = next
 			}
 		}
 	} else {

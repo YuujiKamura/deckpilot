@@ -68,5 +68,5 @@ func launchInto(parsed LaunchArgs, agent AgentDef) error {
 	}
 	fmt.Fprintf(os.Stderr, "ready: %s\nsent: %s\n", parsed.AgentName, result)
 	fmt.Printf("%s %s\n", parsed.Into, tab)
-	return nil
+	return finishLaunchWait(parsed, parsed.Into, tab)
 }

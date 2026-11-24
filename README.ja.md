@@ -98,8 +98,10 @@ codex-02    wt        active
 
 ### `launch` — エージェント起動
 
+`launch` は指示送信後、既定で idle または stalled まで待ち、最後の15行を表示します。メインは完了通知を受けるため `run_in_background` で実行してください。送信後すぐ戻るには `--no-wait`、待機上限の変更には `--wait-timeout 90m`、表示行数の変更には `--wait-tail N` を指定します。タイムアウト時は最後の画面を表示して非0終了します。`--into` では作成したタブを監視します。
+
 ```bash
-deckpilot launch <agent> <prompt...> [--cwd DIR] [--shared-cwd] [--no-meta-prompt]
+deckpilot launch <agent> <prompt...> [--cwd DIR] [--into SESSION] [--shared-cwd] [--no-meta-prompt] [--no-wait] [--wait-timeout DURATION] [--wait-tail N]
 ```
 
 Ghostty ウィンドウを新規起動し、エージェントの準備完了を待ってからプロンプトを送信する。セッション名を stdout に出力するのでスクリプトから利用可能。
@@ -247,7 +249,7 @@ Windows ToolHelp32 API で `ghostty.exe` を列挙し、既知のパイプ命名
 
 **症状**: Claude Code 等の TUI エージェントはカーソル点滅やステータスバー更新で常にバッファが変化し、`idle` 状態に安定しない。
 
-**対策**: `launch` では `idle` を待たず、エージェント固有の Ready 文字列（`>`, `›`）の出現のみで準備完了を判定。
+**対策**: 指示送信前の準備完了は `idle` ではなくエージェント固有の Ready 文字列（`>`, `›`）で判定。
 
 ### RAW_INPUT 非対応
 

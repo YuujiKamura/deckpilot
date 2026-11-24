@@ -93,7 +93,8 @@ Commands:
   list                                            List active sessions (alias: ls)
   prune            <dead-session>                 Remove tracking for a dead session (does not kill Ghostty)
   tab              new <session> | close <session> <tab>  Create or close a tab
-  launch           <agent> <prompt...> [--cwd D] [--into session]  Start agent in a window or tab
+  launch           <agent> <prompt...> [--cwd D] [--into session]  Start agent and wait for idle (use --no-wait to return early)
+                   [--no-wait] [--wait-timeout D] [--wait-tail N]
   watch            [session] [--once] [--json]    Monitor sessions (view-only, no approval)
   hang-detect      <session> [--cpu-threshold N]  External non-destructive hang monitor (run alongside daemon)
                    [--stall-seconds N] [--probe-interval DUR]

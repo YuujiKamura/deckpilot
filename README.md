@@ -119,8 +119,10 @@ watcher error and last three terminal lines.
 
 ### `launch` — Start an agent
 
+`launch` sends the prompt and waits for idle or stalled by default, then prints the last 15 lines. Run it with `run_in_background` from the main agent for completion notification. Use `--no-wait` to return after sending, `--wait-timeout 90m` to set the deadline, and `--wait-tail N` to change the output length. A timeout exits nonzero and prints the last screen. With `--into`, the new tab is monitored.
+
 ```bash
-deckpilot launch <agent> <prompt...> [--cwd DIR] [--ready-timeout DURATION] [--shared-cwd] [--no-meta-prompt]
+deckpilot launch <agent> <prompt...> [--cwd DIR] [--into SESSION] [--ready-timeout DURATION] [--shared-cwd] [--no-meta-prompt] [--no-wait] [--wait-timeout DURATION] [--wait-tail N]
 ```
 
 Checks the agent CLI and configured launch flags first, then starts a Ghostty
@@ -425,7 +427,7 @@ Windows ToolHelp32 enumerates `ghostty.exe` and probes the canonical pipe name `
 
 ### TUI agent idle detection
 **Symptom**: TUI agents (Claude Code etc.) constantly redraw cursor blink and statusbar, so the buffer never stabilises into `idle`.
-**Mitigation**: `launch` does not wait for `idle`; it waits for an agent-specific Ready string (`>` or `›`).
+**Mitigation**: Before sending the prompt, `launch` waits for an agent-specific Ready string (`>` or `›`), rather than idle.
 
 ### Legacy `RAW_INPUT` rejection
 **Symptom**: Older Ghostty builds reject the `RAW_INPUT` IPC verb.

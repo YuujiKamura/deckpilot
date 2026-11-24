@@ -21,7 +21,7 @@ import (
 )
 
 type ChecklistItem struct {
-	LineIdx int  // 0-based line number in the source file
+	LineIdx int // 0-based line number in the source file
 	Body    string
 	Mark    string
 }
@@ -254,10 +254,10 @@ func conductTick(cfg ConductArgs, launch launchFn) (bool, error) {
 		return false, fmt.Errorf("write %s: %w", cfg.File, err)
 	}
 	fmt.Fprintf(os.Stderr, "conduct: dispatching %q -> agent=%s\n", todo.Body, cfg.Agent)
-	
+
 	metaPrompt := fmt.Sprintf("\n\n[SYSTEM ORCHESTRATION INSTRUCTION]\nあなたはシステムから投下された自律ワーカーです。タスクの全体計画は %s に記載されています。\nあなたのタスクは以下の行に相当します:\n`- [>] %s`\n作業が完了したら、必ず %s を編集して、上記の行の `[>]` を `[x]` に書き換えてください。もしエラーで完了できない場合は `[!]` に書き換えてください。その後終了してください。", cfg.File, todo.Body, cfg.File)
-	
-	if err := launch([]string{cfg.Agent, todo.Body + metaPrompt}); err != nil {
+
+	if err := launch([]string{cfg.Agent, todo.Body + metaPrompt, "--no-wait"}); err != nil {
 		// Launch failed. Rewrite [>] to [!] so the task is not stuck in running state,
 		// and the daemon stops further automatic processing.
 		failedBody, markErr := MarkFailed(string(body), todo.LineIdx)

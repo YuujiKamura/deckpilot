@@ -31,6 +31,9 @@ type LaunchArgs struct {
 	ReadyTimeoutSet bool
 	NoMetaPrompt    bool
 	SharedCwd       bool
+	NoWait          bool
+	WaitTimeout     time.Duration
+	WaitTail        int
 }
 
 const (
@@ -77,12 +80,14 @@ type launchTrace struct {
 // <prompt...>` minus the `launch` token).
 func ParseLaunchArgs(args []string, defaultCwd string) (LaunchArgs, string) {
 	if len(args) < 1 {
-		return LaunchArgs{}, "usage: deckpilot launch <agent> <prompt...> [--cwd DIR] [--into SESSION] [--ready-timeout DURATION] [--shared-cwd] [--no-meta-prompt]"
+		return LaunchArgs{}, "usage: deckpilot launch <agent> <prompt...> [--cwd DIR] [--into SESSION] [--ready-timeout DURATION] [--shared-cwd] [--no-meta-prompt] [--no-wait] [--wait-timeout DURATION] [--wait-tail N]"
 	}
 	out := LaunchArgs{
 		AgentName:    args[0],
 		Cwd:          defaultCwd,
 		ReadyTimeout: defaultReadyTimeout,
+		WaitTimeout:  90 * time.Minute,
+		WaitTail:     15,
 	}
 	var promptParts []string
 	for i := 1; i < len(args); i++ {
@@ -110,6 +115,28 @@ func ParseLaunchArgs(args []string, defaultCwd string) (LaunchArgs, string) {
 			out.ReadyTimeout = d
 			out.ReadyTimeoutSet = true
 			i++
+		case "--no-wait":
+			out.NoWait = true
+		case "--wait-timeout":
+			if i+1 >= len(args) {
+				return LaunchArgs{}, "--wait-timeout requires a positive duration"
+			}
+			d, err := time.ParseDuration(args[i+1])
+			if err != nil || d <= 0 {
+				return LaunchArgs{}, "--wait-timeout must be a positive duration"
+			}
+			out.WaitTimeout = d
+			i++
+		case "--wait-tail":
+			if i+1 >= len(args) {
+				return LaunchArgs{}, "--wait-tail requires a positive integer"
+			}
+			n, err := strconv.Atoi(args[i+1])
+			if err != nil || n <= 0 {
+				return LaunchArgs{}, "--wait-tail must be a positive integer"
+			}
+			out.WaitTail = n
+			i++
 		case "--no-meta-prompt":
 			out.NoMetaPrompt = true
 		case "--shared-cwd":
@@ -120,7 +147,7 @@ func ParseLaunchArgs(args []string, defaultCwd string) (LaunchArgs, string) {
 	}
 	out.Prompt = strings.Join(promptParts, " ")
 	if out.Prompt == "" {
-		return LaunchArgs{}, "usage: deckpilot launch <agent> <prompt...> [--cwd DIR] [--into SESSION] [--ready-timeout DURATION] [--shared-cwd] [--no-meta-prompt]"
+		return LaunchArgs{}, "usage: deckpilot launch <agent> <prompt...> [--cwd DIR] [--into SESSION] [--ready-timeout DURATION] [--shared-cwd] [--no-meta-prompt] [--no-wait] [--wait-timeout DURATION] [--wait-tail N]"
 	}
 	return out, ""
 }
@@ -377,7 +404,7 @@ func LaunchWithError(args []string) (retErr error) {
 
 	// Print session name to stdout for scripting
 	fmt.Println(sessionName)
-	return nil
+	return finishLaunchWait(parsed, sessionName, "")
 }
 
 func checkAgentCLI(agent AgentDef) error {

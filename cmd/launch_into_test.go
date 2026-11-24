@@ -35,7 +35,7 @@ func TestLaunchIntoUsesOnlyTargetTab(t *testing.T) {
 		sent = append(sent, msg)
 		return "ok", nil
 	}
-	err := launchInto(LaunchArgs{Into: "test-session", Cwd: `C:\test`, AgentName: "test", Prompt: "hello", SharedCwd: true, ReadyTimeout: time.Second}, AgentDef{Cmd: "test", ReadyStr: "READY"})
+	err := launchInto(LaunchArgs{Into: "test-session", Cwd: `C:\test`, AgentName: "test", Prompt: "hello", SharedCwd: true, NoWait: true, ReadyTimeout: time.Second}, AgentDef{Cmd: "test", ReadyStr: "READY"})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -61,3 +61,15 @@ func LooksActivelyThinking(buf string) bool {
 	}
 	return false
 }
+
+// StableScreenStatus applies the watcher's idle/stall thresholds to an unchanged screen.
+func StableScreenStatus(content string, stableCount int) string {
+	if LooksActivelyThinking(content) {
+		if stableCount >= stalledSpinnerPolls {
+			return "stalled"
+		}
+	} else if stableCount >= 3 {
+		return "idle"
+	}
+	return ""
+}

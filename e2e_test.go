@@ -71,7 +71,7 @@ type e2eSession struct {
 func launchTestSession(t *testing.T, prompt string) *e2eSession {
 	t.Helper()
 
-	cmd := exec.Command(deckpilotExe, "launch", "claude", prompt)
+	cmd := exec.Command(deckpilotExe, "launch", "claude", prompt, "--no-wait")
 	cmd.Dir = projectDir()
 
 	out, err := cmd.Output()
@@ -295,11 +295,11 @@ func TestWatchDeprecationWarning(t *testing.T) {
 // These are flag-parsing tests and do not require a live session.
 func TestShowFlags(t *testing.T) {
 	tests := []struct {
-		name        string
-		args        []string
-		wantExit    bool   // true = expect non-zero exit
-		wantInOut   string // substring expected in combined output (may be empty)
-		noUnknown   bool   // if true, must NOT contain "unknown command"
+		name      string
+		args      []string
+		wantExit  bool   // true = expect non-zero exit
+		wantInOut string // substring expected in combined output (may be empty)
+		noUnknown bool   // if true, must NOT contain "unknown command"
 	}{
 		{
 			name:      "help flag",

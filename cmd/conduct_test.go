@@ -171,12 +171,12 @@ func TestParseConductArgs_DefaultsAndOverrides(t *testing.T) {
 
 func TestParseConductArgs_Errors(t *testing.T) {
 	cases := [][]string{
-		{},                                // no --file
-		{"--file"},                        // --file missing value
-		{"--file", "x", "--agent"},        // --agent missing value
-		{"--file", "x", "--interval"},     // --interval missing value
+		{},                                 // no --file
+		{"--file"},                         // --file missing value
+		{"--file", "x", "--agent"},         // --agent missing value
+		{"--file", "x", "--interval"},      // --interval missing value
 		{"--file", "x", "--interval", "?"}, // bad duration
-		{"--file", "x", "--bogus"},        // unknown flag
+		{"--file", "x", "--bogus"},         // unknown flag
 	}
 	for i, args := range cases {
 		if _, errMsg := ParseConductArgs(args); errMsg == "" {
@@ -207,7 +207,7 @@ func TestConductTick_DispatchesAndMarks(t *testing.T) {
 	if !dispatched {
 		t.Fatal("expected dispatched=true")
 	}
-	if len(launched) != 1 || launched[0][0] != "claude" || !strings.HasPrefix(launched[0][1], "first task") {
+	if len(launched) != 1 || len(launched[0]) != 3 || launched[0][2] != "--no-wait" || launched[0][0] != "claude" || !strings.HasPrefix(launched[0][1], "first task") {
 		t.Fatalf("launched=%v, want [[claude first task]]", launched)
 	}
 	body, _ := readFileForTest(path)
