@@ -97,7 +97,8 @@ func formatListTabs(name string, tabs []listTab) string {
 		return ""
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "  tabs (status above is the * tab; read one with: deckpilot show %s --tab N):\n", name)
+	fmt.Fprintf(&b, "  tabs (* = active; read a tab with: deckpilot show %s --tab <TAB-ID>):\n", name)
+	b.WriteString("     INDEX  TAB ID  STATE  CWD\n")
 	for _, t := range tabs {
 		mark := " "
 		if t.Active {

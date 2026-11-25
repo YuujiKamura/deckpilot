@@ -20,15 +20,17 @@ var showTabSeq atomic.Int64
 // TAIL / HISTORY falls back to the active tab — the behaviour showTab must
 // guard against.
 type fakeTabbedTerminal struct {
-	path string
-	mu   sync.Mutex
-	reqs []string
+	path       string
+	mu         sync.Mutex
+	reqs       []string
+	displayIDs bool
 }
 
-func newFakeTabbedTerminal(t *testing.T) *fakeTabbedTerminal {
+func newFakeTabbedTerminal(t *testing.T, displayIDs bool) *fakeTabbedTerminal {
 	t.Helper()
 	f := &fakeTabbedTerminal{
-		path: fmt.Sprintf(`\\.\pipe\deckpilot-test-showtab-%d-%d`, time.Now().UnixNano(), showTabSeq.Add(1)),
+		path:       fmt.Sprintf(`\\.\pipe\deckpilot-test-showtab-%d-%d`, time.Now().UnixNano(), showTabSeq.Add(1)),
+		displayIDs: displayIDs,
 	}
 	l, err := winio.ListenPipe(f.path, nil)
 	if err != nil {
@@ -75,6 +77,11 @@ func tabOf(field string) int {
 func (f *fakeTabbedTerminal) reply(req string) string {
 	p := strings.Split(req, "|")
 	switch p[0] {
+	case "CAPABILITIES":
+		if f.displayIDs {
+			return "OK|fake|CAPABILITIES|features=display_tab_ids\n"
+		}
+		return "OK|fake|CAPABILITIES\n"
 	case "LIST_TABS":
 		return "LIST_TABS|2|1\nTAB|0|t_000||pwd=C:\\gemini|prompt=0|selection=0\nTAB|1|t_001||pwd=C:\\claude|prompt=0|selection=0\n"
 	case "TAIL", "HISTORY":
@@ -124,7 +131,7 @@ func TestHandleShowTabCartesian(t *testing.T) {
 				n++
 				name := fmt.Sprintf("%s/%s/%q/%s", mode, sess, tab, sess)
 				t.Run(name, func(t *testing.T) {
-					term := newFakeTabbedTerminal(t)
+					term := newFakeTabbedTerminal(t, false)
 					d := &Daemon{
 						sessions:    map[string]string{},
 						wsURLs:      map[string]string{},
@@ -203,6 +210,32 @@ func TestHandleShowTabCartesian(t *testing.T) {
 	// that take the watcher path.
 	if n != 3*10*2-2*2 {
 		t.Fatalf("generated %d cases", n)
+	}
+}
+
+func TestShowDisplayTabRequiresMatchingGhosttyIDs(t *testing.T) {
+	for _, supported := range []bool{false, true} {
+		t.Run(fmt.Sprint(supported), func(t *testing.T) {
+			term := newFakeTabbedTerminal(t, supported)
+			d := &Daemon{
+				sessions: map[string]string{"ghostty-test": term.path},
+				lastUsed: map[string]string{},
+			}
+			resp := d.showTab("ghostty-test", "caller", "history", "display=t_000")
+			if !supported {
+				if !strings.Contains(resp, "does not expose display tab numbers") {
+					t.Fatalf("want capability error, got %q", resp)
+				}
+				if reqs := term.requests(); len(reqs) != 1 || reqs[0] != "CAPABILITIES" {
+					t.Fatalf("legacy terminal received unexpected requests: %q", reqs)
+				}
+				return
+			}
+			content, status := decodeShowOK(t, resp)
+			if strings.TrimSpace(content) != "history of tab 0" || status != "live tab=display=t_000" {
+				t.Fatalf("wrong tab history: content=%q status=%q", content, status)
+			}
+		})
 	}
 }
 

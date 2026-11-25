@@ -25,7 +25,8 @@ func (d *Daemon) handleSendTab(parts []string) string {
 		return "ERR|usage: SENDTAB|<name>|<base64msg>|<caller>|<tab>\n"
 	}
 	name, msgB64, caller, tab := parts[1], parts[2], parts[3], strings.TrimSpace(parts[4])
-	if !pipe.ValidTab(tab) {
+	selector, display := splitTabSelector(tab)
+	if !pipe.ValidTab(selector) {
 		return fmt.Sprintf("ERR|invalid tab %q (want an index like 0 or id=t_001)\n", tab)
 	}
 	msgBytes, err := base64.StdEncoding.DecodeString(msgB64)
@@ -42,11 +43,14 @@ func (d *Daemon) handleSendTab(parts []string) string {
 		}
 	}
 
+	if err := checkDisplayTabSupport(pipePath, display); err != nil {
+		return fmt.Sprintf("ERR|%s\n", err)
+	}
 	list, err := pipe.ListTabs(pipePath)
 	if err != nil {
 		return fmt.Sprintf("ERR|tabs: %s\n", sanitizeErr(err))
 	}
-	target, ok := resolveTabIndex(parseTabList(list), tab)
+	target, ok := resolveTabIndex(parseTabList(list), selector)
 	if !ok {
 		return fmt.Sprintf("ERR|no tab %q in %s (see: deckpilot show %s --tabs)\n", tab, name, name)
 	}
@@ -55,6 +59,10 @@ func (d *Daemon) handleSendTab(parts []string) string {
 			"switch to that tab and send without --tab, or reopen the window on a Ghostty that routes input by tab\n", name, tab)
 	}
 	idx := strconv.Itoa(target.Index)
+	routingTarget := idx
+	if display {
+		routingTarget = selector
+	}
 
 	// Keep the watcher from polling the same pipe while we type (fewer
 	// BUSY replies), as handleSend does.
@@ -66,9 +74,9 @@ func (d *Daemon) handleSendTab(parts []string) string {
 		}
 	}
 
-	tailFn := func() (string, error) { return pipe.TailTab(pipePath, 40, idx) }
+	tailFn := func() (string, error) { return pipe.TailTab(pipePath, 40, routingTarget) }
 	enter := func() error {
-		_, err := pipe.SendRawTab(pipePath, []byte("\r"), idx)
+		_, err := pipe.SendRawTab(pipePath, []byte("\r"), routingTarget)
 		return err
 	}
 
@@ -84,7 +92,7 @@ func (d *Daemon) handleSendTab(parts []string) string {
 	// then confirm the submit from the tab's own screen.
 	baseline, _ := tailFn()
 	baselineHash := BufHash(baseline)
-	if _, err := pipe.SendKeysTab(pipePath, msg, idx); err != nil {
+	if _, err := pipe.SendKeysTab(pipePath, msg, routingTarget); err != nil {
 		return fmt.Sprintf("ERR|send text: %s\n", sanitizeErr(err))
 	}
 	time.Sleep(100 * time.Millisecond)

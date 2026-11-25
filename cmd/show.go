@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/YuujiKamura/deckpilot/daemon"
-	"github.com/YuujiKamura/deckpilot/pipe"
 )
 
 // Show retrieves an individual session's buffer or history.
@@ -24,6 +23,7 @@ func Show(args []string) {
 	tail := 50
 	follow := false
 	tab := ""
+	tabSet := false
 	listTabs := false
 
 	// Parse flags and positional args
@@ -40,12 +40,14 @@ func Show(args []string) {
 		case a == "--tab":
 			i++
 			if i >= len(args) {
-				fmt.Fprintln(os.Stderr, "show: --tab requires a tab index (0, 1, ...) or id=<tab id>")
+				fmt.Fprintln(os.Stderr, "show: --tab requires "+tabSelectorHelp)
 				os.Exit(1)
 			}
 			tab = args[i]
+			tabSet = true
 		case strings.HasPrefix(a, "--tab="):
 			tab = strings.TrimPrefix(a, "--tab=")
+			tabSet = true
 		case a == "--tail":
 			i++
 			if i >= len(args) {
@@ -85,9 +87,13 @@ func Show(args []string) {
 		mode = "history"
 	}
 
-	if tab != "" && !pipe.ValidTab(tab) {
-		fmt.Fprintf(os.Stderr, "show: invalid --tab %q (want an index like 0 or id=t_001)\n", tab)
-		os.Exit(1)
+	if tabSet {
+		selector, ok := cliTabSelector(tab)
+		if !ok {
+			fmt.Fprintf(os.Stderr, "show: invalid --tab %q (want %s)\n", tab, tabSelectorHelp)
+			os.Exit(1)
+		}
+		tab = selector
 	}
 	if listTabs && (tab != "" || follow || mode == "history") {
 		fmt.Fprintln(os.Stderr, "show: --tabs cannot be combined with --tab, --history or --follow")
@@ -178,8 +184,10 @@ Flags:
   --tail N      Show last N non-blank-trimmed lines (default: 50).
   --history     Show history instead of live buffer (equivalent to positional arg "history")
   --follow, -f  Poll every 2s and print updated buffer. Display-only, no approval.
-  --tab T       Read tab T instead of the active tab. T is an index (0, 1, ...)
-                or a tab id (id=t_001). Works with --tail, --history, --follow.
+  --tab T       Read a tab by zero-based index (6), padded Ghostty number
+                (006), or ID (t_006 or id=t_006). Works with --tail, --history,
+                and --follow. Padded numbers require Ghostty support.
+                Use the full ID from --tabs for numbers without padding.
   --tabs        List the window's tabs (index, id, cwd; * = active tab).
   --help, -h    Show this help message
 
@@ -191,7 +199,7 @@ Examples:
   deckpilot show my-session --follow
   deckpilot show my-session --tabs
   deckpilot show my-session --tab 0 --tail 100
-  deckpilot show my-session --tab id=t_001 --history
+  deckpilot show my-session --tab 006 --history
 `)
 }
 
@@ -211,7 +219,8 @@ func formatTabList(raw string) string {
 		switch {
 		case f[0] == "LIST_TABS" && len(f) >= 3:
 			active = f[2]
-			fmt.Fprintf(&b, "tabs: %s (active: %s)\n", f[1], f[2])
+			fmt.Fprintf(&b, "tabs: %s (active index: %s)\n", f[1], f[2])
+			b.WriteString("  INDEX  TAB ID  CWD\n")
 		case f[0] == "TAB" && len(f) >= 3:
 			mark := " "
 			if f[1] == active {

@@ -95,7 +95,7 @@ func (c *Client) SendRecv(message string) (string, error) {
 				}
 				if err != nil {
 					// We expect EOF eventually. For named pipes, Read might return
-					// an error when the other side isn't writing more, but we 
+					// an error when the other side isn't writing more, but we
 					// should check if it's a timeout.
 					break
 				}
@@ -180,19 +180,19 @@ func SendRaw(pipePath string, data []byte) (uint32, error) {
 // every input into the active tab whatever the request names.
 const InputTabRoutingFeature = "input_tab_routing"
 
-// SendKeysTab types text into tab (an index, "0") via INPUT. The terminal
-// must advertise InputTabRoutingFeature, or the text lands in the active tab.
+// SendKeysTab types text into a tab via INPUT. An index requires input tab
+// routing. Use an ID only when the terminal supports authoritative tab IDs.
 func SendKeysTab(pipePath, text, tab string) (uint32, error) {
-	if !ValidTab(tab) || strings.HasPrefix(tab, "id=") {
-		return 0, fmt.Errorf("invalid input tab %q (want an index)", tab)
+	if !ValidTab(tab) {
+		return 0, fmt.Errorf("invalid input tab %q", tab)
 	}
 	return sendQueued(pipePath, fmt.Sprintf("INPUT|deckpilot|%s|%s", Base64Encode(text), tab))
 }
 
 // SendRawTab sends raw bytes (e.g. "\r") to tab via RAW_INPUT.
 func SendRawTab(pipePath string, data []byte, tab string) (uint32, error) {
-	if !ValidTab(tab) || strings.HasPrefix(tab, "id=") {
-		return 0, fmt.Errorf("invalid input tab %q (want an index)", tab)
+	if !ValidTab(tab) {
+		return 0, fmt.Errorf("invalid input tab %q", tab)
 	}
 	return sendQueued(pipePath, fmt.Sprintf("RAW_INPUT|deckpilot|%s|%s", base64.StdEncoding.EncodeToString(data), tab))
 }

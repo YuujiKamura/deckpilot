@@ -313,6 +313,12 @@ func TestShowFlags(t *testing.T) {
 			wantExit: true,
 		},
 		{
+			name:      "empty tab selector",
+			args:      []string{"show", "--tab="},
+			wantExit:  true,
+			wantInOut: "invalid --tab",
+		},
+		{
 			name:     "unknown flag",
 			args:     []string{"show", "--bogus"},
 			wantExit: true,

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -8,6 +9,22 @@ import (
 
 	"github.com/YuujiKamura/deckpilot/pipe"
 )
+
+// splitTabSelector preserves the distinction between a number copied from the
+// UI and an explicit protocol ID. Some Ghostty versions use different IDs.
+func splitTabSelector(tab string) (target string, display bool) {
+	if id, ok := strings.CutPrefix(tab, "display="); ok {
+		return "id=" + id, true
+	}
+	return tab, false
+}
+
+func checkDisplayTabSupport(pipePath string, display bool) error {
+	if display && !pipe.HasFeature(pipePath, "display_tab_ids") {
+		return fmt.Errorf("this Ghostty does not expose display tab numbers; use an index from 'deckpilot show --tabs'")
+	}
+	return nil
+}
 
 // A Ghostty window can hold several tabs, each with its own shell or agent.
 // The watcher reads only the active tab, so two things need the other tabs:

@@ -2,10 +2,10 @@ package daemon
 
 import (
 	"bufio"
-	"io"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/url"
@@ -505,7 +505,8 @@ func (d *Daemon) handleShow(parts []string) string {
 // reading the session pipe directly. The status field is "live tab=<t>"
 // because the watcher status describes the active tab, not this one.
 func (d *Daemon) showTab(name, caller, mode, tab string) string {
-	if tab != "" && !pipe.ValidTab(tab) {
+	target, display := splitTabSelector(tab)
+	if tab != "" && !pipe.ValidTab(target) {
 		return fmt.Sprintf("ERR|invalid tab %q (want an index like 0 or id=t_001)\n", tab)
 	}
 	pipePath, ok := d.resolvePipePath(name)
@@ -517,13 +518,16 @@ func (d *Daemon) showTab(name, caller, mode, tab string) string {
 	}
 
 	if mode != "tabs" {
+		if err := checkDisplayTabSupport(pipePath, display); err != nil {
+			return fmt.Sprintf("ERR|%s\n", err)
+		}
 		// The terminal answers an unknown tab with the active tab's text, which
 		// would show the wrong worker under the requested tab's name.
 		list, err := pipe.ListTabs(pipePath)
 		if err != nil {
 			return fmt.Sprintf("ERR|tabs: %s\n", sanitizeErr(err))
 		}
-		if !pipe.TabInList(list, tab) {
+		if !pipe.TabInList(list, target) {
 			return fmt.Sprintf("ERR|no tab %q in %s (see: deckpilot show %s --tabs)\n", tab, name, name)
 		}
 	}
@@ -535,10 +539,10 @@ func (d *Daemon) showTab(name, caller, mode, tab string) string {
 		content, err = pipe.ListTabs(pipePath)
 		status = "live tabs"
 	case "history":
-		content, err = pipe.HistoryTab(pipePath, tab)
+		content, err = pipe.HistoryTab(pipePath, target)
 		status = "live tab=" + tab
 	default:
-		content, err = pipe.TailTab(pipePath, 50, tab)
+		content, err = pipe.TailTab(pipePath, 50, target)
 		status = "live tab=" + tab
 	}
 	if err != nil {

@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/YuujiKamura/deckpilot/daemon"
-	"github.com/YuujiKamura/deckpilot/pipe"
 )
 
 const sendUsage = "usage: deckpilot send <session> [--tab T] <message...>"
@@ -14,7 +13,7 @@ const sendUsage = "usage: deckpilot send <session> [--tab T] <message...>"
 // Send sends a message+submit via the daemon (which handles pipe resolution,
 // watcher pause, drain-sequenced delivery, and caller tracking).
 //
-// --tab T (an index or id=t_001, right after the session name) types into
+// --tab T (right after the session name) types into
 // that tab instead of the active one.
 func Send(args []string) {
 	name, tab, msgArgs, err := parseSendArgs(args)
@@ -60,19 +59,21 @@ func parseSendArgs(args []string) (name, tab string, msg []string, err error) {
 	switch {
 	case rest[0] == "--tab":
 		if len(rest) < 2 {
-			return "", "", nil, fmt.Errorf("--tab requires a tab index (0, 1, ...) or id=<tab id>")
+			return "", "", nil, fmt.Errorf("--tab requires %s", tabSelectorHelp)
 		}
 		tab, rest = rest[1], rest[2:]
 	case strings.HasPrefix(rest[0], "--tab="):
 		tab, rest = strings.TrimPrefix(rest[0], "--tab="), rest[1:]
 	}
 	if tab != "" || strings.HasPrefix(args[1], "--tab") {
-		if !pipe.ValidTab(tab) {
-			return "", "", nil, fmt.Errorf("invalid --tab %q (want an index like 0 or id=t_001)", tab)
+		selector, ok := cliTabSelector(tab)
+		if !ok {
+			return "", "", nil, fmt.Errorf("invalid --tab %q (want %s)", tab, tabSelectorHelp)
 		}
 		if len(rest) == 0 {
 			return "", "", nil, fmt.Errorf("message required after --tab %s", tab)
 		}
+		tab = selector
 	}
 	return name, tab, rest, nil
 }

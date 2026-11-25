@@ -238,8 +238,8 @@ func TestTabReadsDoNotRetryOtherErrors(t *testing.T) {
 	}
 }
 
-// Input to a tab carries the tab index as the last field; ids and malformed
-// tabs are refused before anything is written.
+// Input to a tab carries its selector as the last field. Malformed selectors
+// are refused before anything is written.
 func TestSendToTabWireFormat(t *testing.T) {
 	rec := &recorder{}
 	path := fakeSession(t, func(req string) string {
@@ -250,14 +250,14 @@ func TestSendToTabWireFormat(t *testing.T) {
 	if err != nil || id != 42 {
 		t.Fatalf("SendKeysTab: id=%d err=%v", id, err)
 	}
-	if _, err := SendRawTab(path, []byte("\r"), "0"); err != nil {
+	if _, err := SendRawTab(path, []byte("\r"), "id=t_006"); err != nil {
 		t.Fatalf("SendRawTab: %v", err)
 	}
-	want := []string{"INPUT|deckpilot|" + Base64Encode("hi there") + "|1", "RAW_INPUT|deckpilot|DQ==|0"}
+	want := []string{"INPUT|deckpilot|" + Base64Encode("hi there") + "|1", "RAW_INPUT|deckpilot|DQ==|id=t_006"}
 	if got := rec.all(); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("wire %q, want %q", got, want)
 	}
-	for _, bad := range []string{"", "id=t_001", "-1", "0|1", "0\nX"} {
+	for _, bad := range []string{"", "id=", "-1", "0|1", "0\nX"} {
 		if _, err := SendKeysTab(path, "x", bad); err == nil {
 			t.Errorf("SendKeysTab(%q): want error", bad)
 		}

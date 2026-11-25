@@ -58,7 +58,7 @@ Each command has a single, well-defined responsibility:
 deckpilot send <session> [--tab T] <message...>
 ```
 
-`--tab T` (right after the session; an index or `id=t_001`) types into that tab instead of the active one. The tab is checked against the window's tab list first, and a tab that is not active is only written to when the terminal advertises `features=input_tab_routing` in CAPABILITIES; an older Ghostty types every input into the active tab, so deckpilot refuses rather than typing into the wrong agent.
+`--tab T` (right after the session) types into the selected tab. It uses the same selectors as `show --tab`. The tab is checked against the window's tab list first. Sending to a background tab requires Ghostty to advertise `features=input_tab_routing` in CAPABILITIES.
 
 Sends text + Enter to the specified session. Compares buffer hash before and after sending; reports `accepted` (previously idle), `queued` (previously active), or `no-effect` (the buffer did not move). Unconfirmed sends remain explicitly marked as unconfirmed.
 
@@ -79,8 +79,8 @@ For auto-approval, use `deckpilot auto-approvals <session>`.
 - `--tail N`: Show last N lines (default: 50).
 - `--history`: Retrieve full scrollback instead of live buffer.
 - `--follow` / `-f`: Poll every 2 seconds and print updates. Display-only — no approval.
-- `--tab T`: Read tab T of the window instead of the active tab. T is an index (`0`, `1`, ...) or a tab id (`id=t_001`). Combines with `--tail`, `--history`, `--follow`. An unknown tab is an error (the terminal would otherwise answer with the active tab).
-- `--tabs`: List the window's tabs (index, id, cwd; `*` marks the active tab).
+- `--tab T`: Read a tab by zero-based index (`6`), padded Ghostty number (`006`), or full tab ID from `--tabs` (`t_006` or `id=t_006`). Padded numbers require Ghostty with the `display_tab_ids` capability. For older windows, use the index or ID reported by `--tabs`. Use the full ID for numbers without padding (for example, `t_100`). Combines with `--tail`, `--history`, or `--follow`. An unknown tab is an error.
+- `--tabs`: List the window's tabs with their index, ID, and working directory. `*` marks the active tab. The index can shift when a tab closes. Ghostty keeps each open tab's ID, so the IDs can have gaps.
 
 ### `list` / `ls` — List sessions
 
@@ -100,11 +100,12 @@ ghostty-39   winui3   stalled
 A window with several tabs gets one line per tab under it. STATUS describes the
 active (`*`) tab; each tab line says whether it is `working` (an agent spinner),
 `open` (something running, e.g. an agent waiting for input), `shell` (back at a
-prompt) or `unknown` (not readable). Read a tab with `show <session> --tab N`.
+prompt) or `unknown` (not readable). Read a tab with `show <session> --tab <TAB-ID>`.
 
 ```
 ghostty-26144   26144  winui3  8m  active  agy --model gemini-4-neon-low
-  tabs (status above is the * tab; read one with: deckpilot show ghostty-26144 --tab N):
+  tabs (* = active; read a tab with: deckpilot show ghostty-26144 --tab <TAB-ID>):
+     INDEX  TAB ID  STATE  CWD
    * 0  t_002  open     C:\Users\me
      1  t_003  working  C:\Users\me
 ```
