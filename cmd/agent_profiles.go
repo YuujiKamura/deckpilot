@@ -55,6 +55,7 @@ func loadAgentProfiles() (map[string]AgentDef, error) {
 			ThinkingStr: e.ThinkingStr,
 			ErrorStr:    e.ErrorStr,
 			Learned:     true,
+			Managed:     strings.HasPrefix(e.LearnedFrom, modelRouterManagedTag),
 		}
 	}
 	return out, nil
@@ -156,6 +157,21 @@ func readyMarkerFrom(screen string) string {
 }
 
 func resolveAgent(name string) (AgentDef, error) {
+	if spec, isManaged := parseManagedProfileName(name); isManaged {
+		def, handled, err := resolveDynamicManagedAgent(spec, name)
+		if handled {
+			return def, err
+		}
+		// Catalog not initialized yet: fall back to existing agents.json entry if present.
+		profiles, profErr := loadAgentProfiles()
+		if profErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not load %s: %v\n", agentProfilesPath(), profErr)
+		} else if def, ok := profiles[name]; ok {
+			return def, nil
+		}
+		return AgentDef{}, fmt.Errorf("managed profile %q cannot be resolved: model catalog not found (run 'deckpilot models snapshot')", name)
+	}
+
 	profiles, err := loadAgentProfiles()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not load %s: %v\n", agentProfilesPath(), err)

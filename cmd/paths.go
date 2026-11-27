@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -18,10 +19,14 @@ var (
 	deckpilotNow      = time.Now
 )
 
-// deckpilotHomeDir returns the per-user state root. Falls back to
+// deckpilotHomeDir returns the per-user state root. Honors DECKPILOT_HOME
+// when set; otherwise uses $HOME/.deckpilot and falls back to
 // %TEMP%/deckpilot when $HOME / %USERPROFILE% is not resolvable, so
 // tooling never blows up on weird shells.
 func deckpilotHomeDir() string {
+	if env := strings.TrimSpace(os.Getenv("DECKPILOT_HOME")); env != "" {
+		return env
+	}
 	home, err := deckpilotUserHome()
 	if err == nil {
 		return filepath.Join(home, ".deckpilot")
@@ -55,6 +60,26 @@ func managedWorktreesDir() string { return filepath.Join(deckpilotHomeDir(), "wo
 // resolution to avoid a daemon→cmd import cycle (cmd already imports
 // daemon for IPC helpers). Keep the two implementations aligned.
 func idleHooksDir() string { return filepath.Join(deckpilotHomeDir(), "idle-hooks") }
+
+// modelCatalogDir, modelSnapshotsDir, modelCurrentCatalogPath, and
+// modelPolicyPath hold the external two-axis (tier x effort) model catalog,
+// snapshot history, and operator budget policy. NOT swept by `deckpilot cleanup`
+// — these are operator configuration and historical catalogs, not ephemeral
+// session artefacts.
+func modelCatalogDir() string         { return modelCatalogDirIn(deckpilotHomeDir()) }
+func modelSnapshotsDir() string       { return modelSnapshotsDirIn(deckpilotHomeDir()) }
+func modelCurrentCatalogPath() string { return modelCurrentCatalogPathIn(deckpilotHomeDir()) }
+func modelPolicyPath() string         { return modelPolicyPathIn(deckpilotHomeDir()) }
+
+func modelCatalogDirIn(home string) string { return filepath.Join(home, "model-catalog") }
+func modelSnapshotsDirIn(home string) string {
+	return filepath.Join(modelCatalogDirIn(home), "snapshots")
+}
+func modelCurrentCatalogPathIn(home string) string {
+	return filepath.Join(modelCatalogDirIn(home), "current.json")
+}
+func modelPolicyPathIn(home string) string   { return filepath.Join(home, "model-policy.json") }
+func agentProfilesPathIn(home string) string { return filepath.Join(home, "agents.json") }
 
 // sanitizeFilename replaces characters that Windows / POSIX
 // filesystems reject in path segments. Also collapses to "unnamed"

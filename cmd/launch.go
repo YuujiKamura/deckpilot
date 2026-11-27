@@ -375,7 +375,7 @@ func LaunchWithError(args []string) (retErr error) {
 	}
 	trace.PromptSent = true
 	trace.FailureStage = "complete"
-	if agent.Generic || agent.Learned {
+	if (agent.Generic || agent.Learned) && !agent.Managed {
 		// deckpilot judged "ready" only from the screen having settled (or a learned profile).
 		// Show what the prompt landed on so the caller can check.
 		time.Sleep(2 * readyPollInterval)

@@ -78,6 +78,8 @@ func main() {
 		cmd.Cleanup(os.Args[2:])
 	case "conduct":
 		cmd.Conduct(os.Args[2:])
+	case "models", "model", "router":
+		cmd.Models(os.Args[2:])
 	case "shutdown":
 		cmd.Shutdown()
 	case "version":
@@ -110,12 +112,13 @@ Commands:
                    [--worktrees]                  + GC dead launch-meta; --worktrees also sweeps orphan worktrees
   conduct          --file PATH [--agent NAME]     Watch a markdown checklist file and auto-launch
                    [--interval 30s] [--one-shot]  agents for each unchecked - [ ] line
+  models           <subcommand> [args]            2D (tier x effort) model catalog, budget policy, routing & escalation (aliases: model, router)
   shutdown                                        Stop the daemon process
 
 Run 'deckpilot help' for this message.
 `)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\n\nAvailable commands: send, show, list, ls, prune, launch, watch, hang-detect, auto-approvals, approve, notify, wait-idle, status, cleanup, conduct, shutdown\nRun 'deckpilot help' for usage.\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n\nAvailable commands: send, show, list, ls, prune, tab, launch, watch, hang-detect, auto-approvals, approve, notify, wait-idle, status, cleanup, conduct, models, model, router, shutdown\nRun 'deckpilot help' for usage.\n", os.Args[1])
 		os.Exit(1)
 	}
 }
